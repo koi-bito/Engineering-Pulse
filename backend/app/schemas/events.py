@@ -125,6 +125,72 @@ class _GitHubPRWebhookPayload(BaseModel):
     repository: _GitHubRepository
 
 
+class _GitHubCommitAuthor(BaseModel):
+    username: str | None = None
+    name: str | None = None
+
+    @property
+    def handle(self) -> str:
+        resolved = (self.username or self.name or "").strip()
+        if not resolved:
+            raise ValueError("Commit author username or name is required")
+        return resolved
+
+
+class _GitHubCommitBody(BaseModel):
+    id: str = Field(min_length=1)
+    message: str
+    timestamp: datetime
+    author: _GitHubCommitAuthor
+
+
+class _GitHubPushWebhookPayload(BaseModel):
+    repository: _GitHubRepository
+    commits: list[_GitHubCommitBody] = Field(min_length=1)
+
+
+class _JiraProject(BaseModel):
+    key: str = Field(min_length=1)
+
+
+class _JiraStatus(BaseModel):
+    name: str = Field(min_length=1)
+
+
+class _JiraAssignee(BaseModel):
+    displayName: str | None = None
+
+
+class _JiraIssueFields(BaseModel):
+    project: _JiraProject
+    summary: str = Field(min_length=1)
+    status: _JiraStatus
+    assignee: _JiraAssignee | None = None
+    created: datetime
+    resolutiondate: datetime | None = None
+
+
+class _JiraIssue(BaseModel):
+    key: str = Field(min_length=1)
+    fields: _JiraIssueFields
+
+
+class _JiraChangelogItem(BaseModel):
+    field: str
+    fromString: str | None = None
+    toString: str | None = None
+
+
+class _JiraChangelog(BaseModel):
+    items: list[_JiraChangelogItem] = Field(default_factory=list)
+
+
+class _JiraWebhookPayload(BaseModel):
+    issue: _JiraIssue
+    timestamp: int | datetime | None = None
+    changelog: _JiraChangelog | None = None
+
+
 def normalize_github_pr(payload: dict[str, Any]) -> PullRequestEvent:
     """Validate and convert a raw GitHub pull_request webhook payload."""
     parsed = _GitHubPRWebhookPayload.model_validate(payload)
@@ -138,4 +204,68 @@ def normalize_github_pr(payload: dict[str, Any]) -> PullRequestEvent:
         opened_at=pr.created_at,
         merged_at=pr.merged_at,
     )
+
+
+def normalize_github_commits(payload: dict[str, Any]) -> list[CommitEvent]:
+    """Validate and convert a raw GitHub push webhook payload into CommitEvents."""
+    parsed = _GitHubPushWebhookPayload.model_validate(payload)
+    return [
+        CommitEvent(
+            id=commit.id,
+            repo=parsed.repository.full_name,
+            author=commit.author.handle,
+            message=commit.message,
+            sha=commit.id,
+            timestamp=commit.timestamp,
+        )
+        for commit in parsed.commits
+    ]
+
+
+def normalize_jira_ticket(payload: dict[str, Any]) -> JiraTicketEvent:
+    """Validate and convert a raw Jira issue webhook payload into JiraTicketEvent."""
+    parsed = _JiraWebhookPayload.model_validate(payload)
+    fields = parsed.issue.fields
+    return JiraTicketEvent(
+        id=parsed.issue.key,
+        project=fields.project.key,
+        assignee=fields.assignee.displayName if fields.assignee else None,
+        summary=fields.summary,
+        status=fields.status.name,
+        created_at=fields.created,
+        resolved_at=fields.resolutiondate,
+    )
+
+
+def normalize_jira_transitions(
+    payload: dict[str, Any],
+    fallback_timestamp: datetime | None = None,
+) -> list[JiraTransitionEvent]:
+    """Extract status transition events from a Jira webhook changelog, normalized to UTC."""
+    parsed = _JiraWebhookPayload.model_validate(payload)
+    if parsed.changelog is None:
+        return []
+
+    raw_ts = parsed.timestamp
+    if isinstance(raw_ts, int):
+        transitioned_at = datetime.fromtimestamp(raw_ts / 1000, tz=UTC)
+    elif isinstance(raw_ts, datetime):
+        transitioned_at = _ensure_utc(raw_ts)
+    elif fallback_timestamp is not None:
+        transitioned_at = _ensure_utc(fallback_timestamp)
+    else:
+        transitioned_at = _ensure_utc(parsed.issue.fields.created)
+
+    transitions: list[JiraTransitionEvent] = []
+    for item in parsed.changelog.items:
+        if item.field == "status" and item.fromString and item.toString:
+            transitions.append(
+                JiraTransitionEvent(
+                    ticket_id=parsed.issue.key,
+                    from_status=item.fromString,
+                    to_status=item.toString,
+                    transitioned_at=transitioned_at,
+                )
+            )
+    return transitions
 

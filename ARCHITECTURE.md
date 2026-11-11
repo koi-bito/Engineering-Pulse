@@ -39,7 +39,17 @@ flowchart LR
 
 ## Consumer & Storage Layer
 
-_To be filled in Phase 1.2._
+1. **Independent Consumer Services (`backend/app/consumers/`):**
+   - `github_consumer` (`github-events`), `jira_consumer` (`jira-events`) in group `engineering-pulse-consumers`, and `dlq_consumer` (`events-dlq`) in group `engineering-pulse-dlq-consumers`.
+   - Each uses `enable_auto_commit=False`, `TrackingRebalanceListener` on partition revocation, and per-record commits (`{TopicPartition: offset + 1}`) only after successful persistence (or DLQ handoff).
+   - Startup waits on `alembic_version` via `scripts/wait-for-migrations.sh` (`python -m app.db.wait_for_migrations`).
+2. **PostgreSQL & Connection Pooling (`backend/app/db/`, `backend/alembic/`):**
+   - Source-of-truth tables (`pull_requests`, `commits`, `jira_tickets`, `jira_transitions`, `failed_events`) with `TIMESTAMP WITH TIME ZONE`, indexes on query/filter columns, and idempotent upserts (`ON CONFLICT`).
+   - Per-service `asyncpg.create_pool()` (`api` 5–10, `github-consumer` 2–5, `jira-consumer` 2–5, `dlq-consumer` 1–2) instrumented via `postgres_pool_active_connections{service}`.
+3. **Elasticsearch (`backend/app/services/es_index.py`):**
+   - Writes after PostgreSQL commit to alias `engineering-events` → `engineering-events-v1`, guarded by `ES_ENABLED`.
+4. **Redis Cache & Pub/Sub (`backend/app/services/cache.py`, `pubsub.py`):**
+   - Invalidates `metrics:prs_merged_today`, `metrics:avg_cycle_time_7d`, and `sprint:active:{project_key}` on writes and publishes `{ "type": "event", ... }` summaries to Redis Pub/Sub `live-feed`.
 
 ## API & WebSocket Layer
 

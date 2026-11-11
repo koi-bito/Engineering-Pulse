@@ -5,12 +5,13 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-COPY pyproject.toml .
-RUN pip install --no-cache-dir .
-
+COPY pyproject.toml alembic.ini ./
 COPY app ./app
+COPY alembic ./alembic
+COPY scripts ./scripts
+
+RUN pip install --no-cache-dir . && chmod +x /app/scripts/wait-for-migrations.sh
 
 EXPOSE 8000
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
-

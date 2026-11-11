@@ -29,6 +29,10 @@ class FakeAsyncRedis:
         self.store[name] = (value, ex)
         return True
 
+    async def get(self, name: str) -> str | None:
+        entry = self.store.get(name)
+        return entry[0] if entry else None
+
     async def delete(self, *names: str) -> int:
         deleted = 0
         for name in names:

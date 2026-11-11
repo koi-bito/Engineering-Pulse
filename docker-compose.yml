@@ -149,6 +149,97 @@ services:
       timeout: 5s
       retries: 10
 
+  api:
+    build: ./backend
+    container_name: ep-api
+    profiles: ["app"]
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      localstack:
+        condition: service_healthy
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-local}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-engineering_pulse}
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      ES_ENABLED: ${ES_ENABLED:-true}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-engineering-pulse-raw-events}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-local-github-secret}
+      JIRA_WEBHOOK_SECRET: ${JIRA_WEBHOOK_SECRET:-local-jira-secret}
+      WEBHOOK_RATE_LIMIT: ${WEBHOOK_RATE_LIMIT:-100/minute}
+    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+
+  github-consumer:
+    build: ./backend
+    container_name: ep-github-consumer
+    profiles: ["app"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-local}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-engineering_pulse}
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      ES_ENABLED: ${ES_ENABLED:-true}
+    entrypoint: ["/app/scripts/wait-for-migrations.sh"]
+    command: ["python", "-m", "app.consumers.github_consumer"]
+
+  jira-consumer:
+    build: ./backend
+    container_name: ep-jira-consumer
+    profiles: ["app"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-local}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-engineering_pulse}
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      ES_ENABLED: ${ES_ENABLED:-true}
+    entrypoint: ["/app/scripts/wait-for-migrations.sh"]
+    command: ["python", "-m", "app.consumers.jira_consumer"]
+
+  dlq-consumer:
+    build: ./backend
+    container_name: ep-dlq-consumer
+    profiles: ["app"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-local}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-engineering_pulse}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    entrypoint: ["/app/scripts/wait-for-migrations.sh"]
+    command: ["python", "-m", "app.consumers.dlq_consumer"]
+
 volumes:
   kafka_data:
   postgres_data:

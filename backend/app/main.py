@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
 
 from app.config import Settings, get_settings
+from app.db.pool import create_pg_pool
 from app.routers.webhooks import router as webhooks_router
 from app.services.kafka_producer import KafkaEventProducer
 from app.services.rate_limit import configure_webhook_limiter, webhook_limiter
@@ -121,9 +122,14 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        owns_db_pool = not hasattr(application.state, "db_pool")
         owns_redis = not hasattr(application.state, "redis")
         owns_kafka = not hasattr(application.state, "kafka_producer")
 
+        if owns_db_pool:
+            application.state.db_pool = await create_pg_pool(
+                cfg.DATABASE_URL, service="api", min_size=5, max_size=10
+            )
         if owns_redis:
             application.state.redis = redis_async.from_url(
                 cfg.REDIS_URL, decode_responses=True
@@ -151,6 +157,8 @@ def create_app(
                 await application.state.kafka_producer.stop()
             if owns_redis and hasattr(application.state, "redis"):
                 await application.state.redis.aclose()
+            if owns_db_pool and hasattr(application.state, "db_pool"):
+                await application.state.db_pool.close()
 
     app = FastAPI(title="Engineering Pulse API", version="0.1.0", lifespan=lifespan)
     app.state.settings = cfg
