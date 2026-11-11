@@ -77,3 +77,76 @@
 **Reasons:**
 - Prevents timezone drift and cross-source cycle-time calculation bugs.
 
+
+---
+
+## ADR-006 — Testing scope: unit + mocked integration vs full E2E
+
+**Date:** 2026-11-11
+**Status:** Accepted
+
+**Context:** Pipeline code spans pure Pydantic normalization, Redis idempotency, webhook authentication, Kafka/S3 wiring, and React UI.
+
+**Decision:** Unit-test pure functions (normalization, cycle-time math, idempotency) and run ASGI integration tests against in-memory fakes for Redis/S3/Kafka; defer full E2E browser automation.
+
+**Reasons:**
+- Catches trust-boundary regressions (signature checks, validation errors, deduplication, rate limits) in <1s in CI without Docker service startup overhead.
+
+---
+
+## ADR-007 — Idempotency at webhook receiver (and consumer-safe storage)
+
+**Date:** 2026-11-11
+**Status:** Accepted
+
+**Context:** GitHub and Jira retry webhook deliveries on timeouts.
+
+**Decision:** Deduplicate at the receiver via atomic Redis `SET seen:events:{event_id} "1" EX 86400 NX` before archiving or publishing, releasing the key if S3/Kafka fails.
+
+**Reasons:**
+- Prevents duplicate deliveries from fanning out into S3 and Kafka topics while allowing failed deliveries to recover on retry.
+
+**Trade-offs accepted:**
+- Redis is ephemeral on single-EC2 deployment; 24h dedup window is bounded by Redis TTL.
+
+---
+
+## ADR-008 — Rate limit per webhook secret instead of client IP
+
+**Date:** 2026-11-11
+**Status:** Accepted
+
+**Context:** Webhook providers deliver events from shared outbound IP ranges.
+
+**Decision:** Verify webhook signatures first, then enforce `slowapi` rate limits keyed by `sha256(secret)` (falling back to client IP only when unauthenticated).
+
+**Reasons:**
+- Prevents one noisy tenant/integration from exhausting another's quota and stops unauthenticated `401` floods from draining legitimate webhook secrets.
+
+---
+
+## ADR-009 — `aiokafka` over `confluent-kafka-python`
+
+**Date:** 2026-11-11
+**Status:** Accepted
+
+**Context:** FastAPI webhook ingestion and Python consumers run on asyncio event loops.
+
+**Decision:** Use `aiokafka` (`AIOKafkaProducer` / `AIOKafkaConsumer`).
+
+**Reasons:**
+- Native asyncio integration without blocking worker threads or bridging C-library poll callbacks (`librdkafka`).
+
+---
+
+## ADR-010 — S3 raw payload archive before Kafka publish
+
+**Date:** 2026-11-11
+**Status:** Accepted
+
+**Context:** Kafka can experience transient outages or consumer bugs requiring full replay.
+
+**Decision:** Archive raw JSON payloads to S3 (`raw/{source}/{YYYY}/{MM}/{DD}/{event_id}.json`) via threadpool before `send_and_wait` to Kafka, instead of Kafka exactly-once transactions.
+
+**Reasons:**
+- Guarantees raw event durability even if Kafka publishing fails after producer retries, providing an independent replay source alongside Kafka offsets.
