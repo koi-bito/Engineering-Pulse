@@ -36,3 +36,21 @@
 **What I learned:** Always verify third-party constructor parameters against installed library signatures (`aiokafka`) and verify trust-boundary ordering (signature check -> per-secret rate limit -> idempotency -> S3 -> Kafka).
 
 **Decisions logged in DECISIONS.md:** Yes — ADR-006 through ADR-010.
+
+---
+
+## 2026-11-11 · Phase 1.2 — Kafka Consumers, Postgres/Alembic, DLQ, Redis & Seed Script
+
+**Problem I was solving:** Building crash-isolated Kafka consumers with at-least-once guarantees, idempotent Postgres storage, Elasticsearch secondary indexing, Redis cache/Pub/Sub fan-out, DLQ handling, and a realistic 90-day event generator (`scripts/seed.py`).
+
+**What I asked AI:** Implement Phase 1.2 following `Building plan.md`, checking `aiokafka` assignor/commit behavior and `elasticsearch` 8.x signatures.
+
+**What AI suggested & verified:**
+- Inspected `aiokafka.AIOKafkaConsumer` (`0.15.0`): `commit()` without arguments commits all fetched offsets from `getmany()`, so committing `{TopicPartition: record.offset + 1}` per record prevents skipping failed records on crash. Also verified `RoundRobinPartitionAssignor` handles asymmetric topic subscriptions (`github-events` vs `jira-events`) in the same `engineering-pulse-consumers` group.
+- Used `postgresql+asyncpg` async Alembic `env.py` + `asyncpg` polling inside `wait-for-migrations.sh` so consumers wait for migrations cleanly inside `python:3.12-slim` without needing `psql`.
+- Created index `engineering-events-v1` behind alias `engineering-events` from day one so Phase 5's zero-downtime reindex needs no consumer changes.
+- Designed `scripts/seed.py` (Pass 2) with weekend dips, 14-day sprint-end spikes, burst deploys, stalled PRs, and `429 Retry-After` handling so 90-day seeding works reliably against the webhook receiver.
+
+**What I learned:** Committing per-record `TopicPartition` offsets—rather than bare `consumer.commit()`—is essential when pairing `getmany()` with manual offset management.
+
+**Decisions logged in DECISIONS.md:** Yes — ADR-011 through ADR-014.

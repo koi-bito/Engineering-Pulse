@@ -3,7 +3,13 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.events import PullRequestEvent, normalize_github_pr
+from app.schemas.events import (
+    PullRequestEvent,
+    normalize_github_commits,
+    normalize_github_pr,
+    normalize_jira_ticket,
+    normalize_jira_transitions,
+)
 
 
 def test_normalize_valid_github_pr() -> None:
@@ -59,3 +65,57 @@ def test_pr_cycle_time_rejects_negative_duration() -> None:
             merged_at=datetime(2026, 11, 11, 9, 0, tzinfo=UTC),
         )
 
+
+def test_normalize_github_commits() -> None:
+    payload = {
+        "repository": {"full_name": "acme/api"},
+        "commits": [
+            {
+                "id": "abc123",
+                "message": "feat: add consumer",
+                "timestamp": "2026-11-11T15:30:00+05:30",
+                "author": {"username": "kunal"},
+            }
+        ],
+    }
+
+    commits = normalize_github_commits(payload)
+    assert len(commits) == 1
+    assert commits[0].sha == "abc123"
+    assert commits[0].author == "kunal"
+    assert commits[0].timestamp == datetime(2026, 11, 11, 10, 0, tzinfo=UTC)
+
+
+def test_normalize_jira_ticket_and_transitions_convert_to_utc() -> None:
+    payload = {
+        "webhookEvent": "jira:issue_updated",
+        "timestamp": 1794391200000,
+        "issue": {
+            "key": "ENG-42",
+            "fields": {
+                "project": {"key": "ENG"},
+                "summary": "Fix consumer lag",
+                "status": {"name": "Done"},
+                "assignee": {"displayName": "kunal"},
+                "created": "2026-11-11T13:30:00+05:30",
+                "resolutiondate": "2026-11-11T16:30:00+05:30",
+            },
+        },
+        "changelog": {
+            "items": [
+                {"field": "status", "fromString": "In Progress", "toString": "Done"}
+            ]
+        },
+    }
+
+    ticket = normalize_jira_ticket(payload)
+    transitions = normalize_jira_transitions(payload)
+
+    assert ticket.id == "ENG-42"
+    assert ticket.created_at == datetime(2026, 11, 11, 8, 0, tzinfo=UTC)
+    assert ticket.resolved_at == datetime(2026, 11, 11, 11, 0, tzinfo=UTC)
+    assert ticket.cycle_time_hours == 3.0
+    assert len(transitions) == 1
+    assert transitions[0].from_status == "In Progress"
+    assert transitions[0].to_status == "Done"
+    assert transitions[0].transitioned_at.tzinfo == UTC

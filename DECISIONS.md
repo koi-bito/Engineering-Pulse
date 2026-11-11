@@ -150,3 +150,59 @@
 
 **Reasons:**
 - Guarantees raw event durability even if Kafka publishing fails after producer retries, providing an independent replay source alongside Kafka offsets.
+
+---
+
+## ADR-011 — Separate Docker service per Kafka consumer
+
+**Date:** 2026-11-11
+**Status:** Accepted
+
+**Context:** Consumers need independent restart, scaling, and crash isolation from the FastAPI ingestion/query process.
+
+**Decision:** Run `github_consumer`, `jira_consumer`, and `dlq_consumer` as separate Docker services (`profiles: ["app"]` for local dev convenience) gated by `wait-for-migrations.sh`.
+
+**Reasons:**
+- A consumer crash or rebalance never stalls or takes down FastAPI webhook ingestion or API endpoints.
+
+---
+
+## ADR-012 — Per-service `asyncpg` connection pools
+
+**Date:** 2026-11-11
+**Status:** Accepted
+
+**Context:** API and consumer containers run as separate OS processes sharing RDS `db.t3.micro` (87 max connections).
+
+**Decision:** Each service initializes its own `asyncpg.create_pool()` (`api`: 5–10, `github-consumer`: 2–5, `jira-consumer`: 2–5, `dlq-consumer`: 1–2; worst-case 22 connections) with a `postgres_pool_active_connections{service=...}` Prometheus gauge.
+
+**Reasons:**
+- Prevents connection exhaustion under webhook bursts while staying well inside RDS limits.
+
+---
+
+## ADR-013 — Manual per-record offset commits after write + DLQ
+
+**Date:** 2026-11-11
+**Status:** Accepted
+
+**Context:** `aiokafka` defaults to `enable_auto_commit=True` (at-most-once delivery risk on crash), while committing a whole `getmany` batch via bare `commit()` skips failed records.
+
+**Decision:** Set `enable_auto_commit=False`, use idempotent Postgres upserts, commit `{TopicPartition: offset + 1}` only after Postgres/ES/PubSub succeed, and route failed records to `events-dlq` (`dlq_consumer` -> `failed_events`) before advancing the offset.
+
+**Reasons:**
+- Achieves safe at-least-once processing without letting a single malformed payload block an entire Kafka partition.
+
+---
+
+## ADR-014 — Elasticsearch secondary to Postgres via alias `engineering-events`
+
+**Date:** 2026-11-11
+**Status:** Accepted
+
+**Context:** ES is excluded in production `docker-compose.prod.yml` during Phases 1–4 to conserve RAM, and Phase 5 requires zero-downtime reindexing.
+
+**Decision:** Treat PostgreSQL as source of truth, guard ES indexing behind `ES_ENABLED`, and write to alias `engineering-events` pointing to `engineering-events-v1`.
+
+**Reasons:**
+- Consumers run cleanly in production with `ES_ENABLED=false` during Phases 1–4 and Phase 5 can swap `v1 -> v2` atomically with zero consumer code changes.
