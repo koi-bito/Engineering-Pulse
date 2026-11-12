@@ -220,3 +220,21 @@
 
 **Reasons:**
 - Combines at-least-once delivery with idempotent downstream Postgres/ES writes while keeping S3 as a replayable fallback when Kafka is unavailable.
+
+---
+
+## ADR-016 — Redis Pub/Sub for WebSocket fan-out over direct consumer-to-WS
+
+**Date:** 2026-11-12
+**Status:** Accepted
+
+**Context:** Kafka consumers (`github-consumer`, `jira-consumer`) run as separate Docker processes/containers from the FastAPI API process (`api`) that holds browser WebSocket connections (`/ws/feed`).
+
+**Decision:** Consumers publish compact event envelopes to Redis Pub/Sub channel `live-feed`, and each `/ws/feed` handler subscribes to `live-feed` for the lifetime of the WebSocket connection.
+
+**Reasons:**
+- Decouples consumer processes from API process memory/lifecycle — consumers never track browser sockets, and multiple API workers can fan out the same stream.
+- Avoids internal consumer-to-API RPC/HTTP push retries and head-of-line blocking inside the Kafka commit loop.
+
+**Trade-offs accepted:**
+- Redis Pub/Sub is fire-and-forget (at-most-once delivery for connected UI viewers); historical state remains durable in PostgreSQL and is fetched via REST on connect/reconnect.

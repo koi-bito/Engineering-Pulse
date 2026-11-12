@@ -1,6 +1,8 @@
+import asyncio
 import hashlib
 import hmac
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 
@@ -11,11 +13,57 @@ from app.config import Settings
 from app.main import create_app
 
 
+class FakePubSub:
+    """In-memory Redis Pub/Sub subscriber used by WebSocket integration tests."""
+
+    def __init__(self, redis: "FakeAsyncRedis") -> None:
+        self._redis = redis
+        self.subscribed: list[str] = []
+        self.unsubscribed: list[str] = []
+        self.closed = False
+        self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    async def subscribe(self, *channels: str) -> None:
+        self._loop = asyncio.get_running_loop()
+        for channel in channels:
+            self.subscribed.append(channel)
+            self._redis.subscribers.setdefault(channel, []).append(self)
+
+    async def unsubscribe(self, *channels: str) -> None:
+        for channel in channels:
+            self.unsubscribed.append(channel)
+            subs = self._redis.subscribers.get(channel, [])
+            if self in subs:
+                subs.remove(self)
+
+    def push_message(self, channel: str, message: str) -> None:
+        item = {"type": "message", "channel": channel, "data": message}
+        if self._loop is not None and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, item)
+        else:
+            self._queue.put_nowait(item)
+
+    async def get_message(
+        self, ignore_subscribe_messages: bool = False, timeout: float = 0.0
+    ) -> dict[str, Any] | None:
+        try:
+            return await asyncio.wait_for(self._queue.get(), timeout=timeout or 0.05)
+        except TimeoutError:
+            return None
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
 class FakeAsyncRedis:
     """In-memory subset of redis.asyncio used in unit and integration tests."""
 
     def __init__(self) -> None:
         self.store: dict[str, tuple[str, int | None]] = {}
+        self.published: list[tuple[str, str]] = []
+        self.subscribers: dict[str, list[FakePubSub]] = {}
+        self.created_pubsubs: list[FakePubSub] = []
 
     async def set(
         self,
@@ -41,6 +89,62 @@ class FakeAsyncRedis:
                 deleted += 1
         return deleted
 
+    def publish_sync(self, channel: str, message: str) -> int:
+        self.published.append((channel, message))
+        subs = list(self.subscribers.get(channel, []))
+        for sub in subs:
+            sub.push_message(channel, message)
+        return len(subs)
+
+    async def publish(self, channel: str, message: str) -> int:
+        return self.publish_sync(channel, message)
+
+    def pubsub(self) -> FakePubSub:
+        ps = FakePubSub(self)
+        self.created_pubsubs.append(ps)
+        return ps
+
+    async def aclose(self) -> None:
+        pass
+
+
+class FakeQueryConn:
+    """Programmable fake asyncpg connection for read/query integration tests."""
+
+    def __init__(self) -> None:
+        self.queries: list[tuple[str, tuple[Any, ...]]] = []
+        self.fetchrow_handler: Any = None
+        self.fetch_handler: Any = None
+        self.fail_next: Exception | None = None
+
+    async def fetchrow(self, query: str, *args: Any) -> Any:
+        if self.fail_next is not None:
+            exc = self.fail_next
+            self.fail_next = None
+            raise exc
+        self.queries.append((query, args))
+        return self.fetchrow_handler(query, *args) if self.fetchrow_handler else None
+
+    async def fetch(self, query: str, *args: Any) -> list[Any]:
+        if self.fail_next is not None:
+            exc = self.fail_next
+            self.fail_next = None
+            raise exc
+        self.queries.append((query, args))
+        return self.fetch_handler(query, *args) if self.fetch_handler else []
+
+
+class FakeQueryPool:
+    def __init__(self) -> None:
+        self.conn = FakeQueryConn()
+
+    @asynccontextmanager
+    async def acquire(self) -> AsyncIterator[FakeQueryConn]:
+        yield self.conn
+
+    async def close(self) -> None:
+        pass
+
 
 class FakeS3Archive:
     def __init__(self) -> None:
@@ -60,6 +164,9 @@ class FakeS3Archive:
         self.calls.append((source, event_id, received_at, raw_body))
         return f"raw/{source}/{received_at:%Y/%m/%d}/{event_id}.json"
 
+    async def ensure_bucket(self) -> None:
+        pass
+
 
 class FakeKafkaProducer:
     def __init__(self) -> None:
@@ -73,6 +180,12 @@ class FakeKafkaProducer:
         self.published.append(envelope)
         return "github-events" if envelope.source == "github" else "jira-events"
 
+    async def start(self) -> None:
+        pass
+
+    async def stop(self) -> None:
+        pass
+
 
 def sign_github_payload(raw_body: bytes, secret: str) -> str:
     digest = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
@@ -82,6 +195,11 @@ def sign_github_payload(raw_body: bytes, secret: str) -> str:
 @pytest.fixture
 def fake_redis() -> FakeAsyncRedis:
     return FakeAsyncRedis()
+
+
+@pytest.fixture
+def fake_db_pool() -> FakeQueryPool:
+    return FakeQueryPool()
 
 
 @pytest.fixture
@@ -118,4 +236,3 @@ async def webhook_client(
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         yield client
-

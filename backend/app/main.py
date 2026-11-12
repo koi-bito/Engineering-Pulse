@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -5,17 +7,24 @@ from datetime import UTC, datetime
 
 import redis.asyncio as redis_async
 import structlog
+from aiokafka.errors import KafkaError
 from botocore.exceptions import BotoCoreError, ClientError
-from fastapi import FastAPI, HTTPException, Request, Response, status
+from elasticsearch import AsyncElasticsearch
+from fastapi import FastAPI, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from prometheus_fastapi_instrumentator import Instrumentator
 from slowapi.errors import RateLimitExceeded
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import Settings, get_settings
 from app.db.pool import create_pg_pool
+from app.routers.metrics import router as metrics_router
 from app.routers.webhooks import router as webhooks_router
+from app.routers.ws import router as ws_router
 from app.services.kafka_producer import KafkaEventProducer
+from app.services.metrics import refresh_kafka_consumer_lag
 from app.services.rate_limit import configure_webhook_limiter, webhook_limiter
 from app.services.s3_archive import S3ArchiveService
 
@@ -57,8 +66,8 @@ def _error_payload(error: str, detail: object, retry_after: int | None = None) -
 
 
 def _register_exception_handlers(app: FastAPI) -> None:
-    @app.exception_handler(HTTPException)
-    async def http_exception_handler(_: Request, exc: HTTPException) -> JSONResponse:
+    @app.exception_handler(StarletteHTTPException)
+    async def http_exception_handler(_: Request, exc: StarletteHTTPException) -> JSONResponse:
         code = _HTTP_ERROR_CODES.get(exc.status_code, "http_error")
         return JSONResponse(
             status_code=exc.status_code,
@@ -71,7 +80,7 @@ def _register_exception_handlers(app: FastAPI) -> None:
         _: Request, exc: RequestValidationError
     ) -> JSONResponse:
         return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=422,
             content=_error_payload("validation_error", exc.errors()),
         )
 
@@ -110,6 +119,15 @@ def _register_exception_handlers(app: FastAPI) -> None:
         )
 
 
+async def _kafka_lag_loop(bootstrap_servers: str, interval_seconds: float = 15.0) -> None:
+    while True:
+        try:
+            await refresh_kafka_consumer_lag(bootstrap_servers)
+        except (KafkaError, OSError, TimeoutError) as exc:
+            logger.debug("kafka_lag_refresh_skipped", error=str(exc))
+        await asyncio.sleep(interval_seconds)
+
+
 def create_app(
     settings: Settings | None = None,
     rate_limit_storage_uri: str | None = None,
@@ -128,6 +146,7 @@ def create_app(
         owns_db_pool = not hasattr(application.state, "db_pool")
         owns_redis = not hasattr(application.state, "redis")
         owns_kafka = not hasattr(application.state, "kafka_producer")
+        owns_es = not hasattr(application.state, "es_client")
 
         if owns_db_pool:
             application.state.db_pool = await create_pg_pool(
@@ -136,6 +155,10 @@ def create_app(
         if owns_redis:
             application.state.redis = redis_async.from_url(
                 cfg.REDIS_URL, decode_responses=True
+            )
+        if owns_es:
+            application.state.es_client = (
+                AsyncElasticsearch(cfg.ELASTICSEARCH_URL) if cfg.ES_ENABLED else None
             )
         if not hasattr(application.state, "s3_archive"):
             application.state.s3_archive = S3ArchiveService(
@@ -148,16 +171,24 @@ def create_app(
             except (ClientError, BotoCoreError, OSError) as exc:
                 logger.warning("s3_bucket_init_failed", error=str(exc))
 
+        lag_task: asyncio.Task[None] | None = None
         if owns_kafka:
             producer = KafkaEventProducer(cfg.KAFKA_BOOTSTRAP_SERVERS)
             await producer.start()
             application.state.kafka_producer = producer
+            lag_task = asyncio.create_task(_kafka_lag_loop(cfg.KAFKA_BOOTSTRAP_SERVERS))
 
         try:
             yield
         finally:
+            if lag_task is not None:
+                lag_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await lag_task
             if owns_kafka and hasattr(application.state, "kafka_producer"):
                 await application.state.kafka_producer.stop()
+            if owns_es and getattr(application.state, "es_client", None) is not None:
+                await application.state.es_client.close()
             if owns_redis and hasattr(application.state, "redis"):
                 await application.state.redis.aclose()
             if owns_db_pool and hasattr(application.state, "db_pool"):
@@ -166,6 +197,7 @@ def create_app(
     app = FastAPI(title="Engineering Pulse API", version="0.1.0", lifespan=lifespan)
     app.state.settings = cfg
     app.state.limiter = webhook_limiter
+    app.state.ws_connections = set()
 
     _register_exception_handlers(app)
 
@@ -178,6 +210,8 @@ def create_app(
     )
 
     app.include_router(webhooks_router)
+    app.include_router(metrics_router)
+    app.include_router(ws_router)
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -186,6 +220,8 @@ def create_app(
             "environment": cfg.ENVIRONMENT,
             "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         }
+
+    Instrumentator().instrument(app).expose(app)
 
     return app
 

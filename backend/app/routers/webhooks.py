@@ -6,10 +6,12 @@ from typing import Any, Literal
 
 import structlog
 from fastapi import APIRouter, HTTPException, Request, Response, status
+from slowapi.errors import RateLimitExceeded
 
 from app.config import Settings, get_settings
 from app.schemas.events import WebhookEnvelope
 from app.services.idempotency import clear_seen_event, is_duplicate_event
+from app.services.metrics import WEBHOOK_EVENTS_RECEIVED_TOTAL
 from app.services.rate_limit import check_webhook_rate_limit, webhook_limit_decorator
 
 logger = structlog.get_logger(__name__)
@@ -29,6 +31,9 @@ def _verify_github_signature(raw_body: bytes, signature_header: str | None, secr
             detail="GitHub webhook secret is not configured",
         )
     if not signature_header or not signature_header.startswith("sha256="):
+        WEBHOOK_EVENTS_RECEIVED_TOTAL.labels(
+            source="github", event_type="unknown", status="unauthorized"
+        ).inc()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or invalid GitHub webhook signature",
@@ -38,6 +43,9 @@ def _verify_github_signature(raw_body: bytes, signature_header: str | None, secr
         + hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
     )
     if not hmac.compare_digest(expected, signature_header):
+        WEBHOOK_EVENTS_RECEIVED_TOTAL.labels(
+            source="github", event_type="unknown", status="unauthorized"
+        ).inc()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid GitHub webhook signature",
@@ -52,10 +60,28 @@ def _verify_jira_token(token_header: str | None, secret: str) -> None:
             detail="Jira webhook secret is not configured",
         )
     if not token_header or not hmac.compare_digest(secret, token_header):
+        WEBHOOK_EVENTS_RECEIVED_TOTAL.labels(
+            source="jira", event_type="unknown", status="unauthorized"
+        ).inc()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid Jira webhook secret token",
         )
+
+
+def _enforce_rate_limit(
+    request: Request,
+    endpoint_func: Any,
+    source: Literal["github", "jira"],
+    secret: str,
+) -> None:
+    try:
+        check_webhook_rate_limit(request, endpoint_func, source, secret)
+    except RateLimitExceeded:
+        WEBHOOK_EVENTS_RECEIVED_TOTAL.labels(
+            source=source, event_type="unknown", status="rate_limited"
+        ).inc()
+        raise
 
 
 def _parse_json_dict(raw_body: bytes) -> dict[str, Any]:
@@ -88,6 +114,9 @@ async def _ingest_event(
     kafka_producer = request.app.state.kafka_producer
 
     if await is_duplicate_event(redis_client, event_id):
+        WEBHOOK_EVENTS_RECEIVED_TOTAL.labels(
+            source=source, event_type=event_type, status="deduplicated"
+        ).inc()
         logger.info("webhook_deduplicated", event_id=event_id, source=source, type=event_type)
         return {"status": "accepted", "event_id": event_id, "deduplicated": True}
 
@@ -104,9 +133,15 @@ async def _ingest_event(
         topic = await kafka_producer.publish_event(envelope)
     except Exception:
         # Release idempotency lock on transient failures so source retries can recover.
+        WEBHOOK_EVENTS_RECEIVED_TOTAL.labels(
+            source=source, event_type=event_type, status="failed"
+        ).inc()
         await clear_seen_event(redis_client, event_id)
         raise
 
+    WEBHOOK_EVENTS_RECEIVED_TOTAL.labels(
+        source=source, event_type=event_type, status="accepted"
+    ).inc()
     logger.info(
         "webhook_ingested",
         event_id=event_id,
@@ -128,7 +163,7 @@ async def receive_github_webhook(request: Request, response: Response) -> dict[s
         request.headers.get("X-Hub-Signature-256"),
         settings.GITHUB_WEBHOOK_SECRET,
     )
-    check_webhook_rate_limit(
+    _enforce_rate_limit(
         request,
         receive_github_webhook,
         "github",
@@ -154,7 +189,7 @@ async def receive_jira_webhook(request: Request, response: Response) -> dict[str
         request.headers.get("X-Jira-Webhook-Secret"),
         settings.JIRA_WEBHOOK_SECRET,
     )
-    check_webhook_rate_limit(
+    _enforce_rate_limit(
         request,
         receive_jira_webhook,
         "jira",

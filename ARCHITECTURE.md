@@ -53,7 +53,16 @@ flowchart LR
 
 ## API & WebSocket Layer
 
-_To be filled in Phase 1.3._
+1. **Read-Through Metrics & Search REST Endpoints (`backend/app/routers/metrics.py`, `backend/app/db/repositories.py`):**
+   - `GET /api/metrics/summary`, `GET /api/metrics/prs?range=7d|14d|30d|90d`, `GET /api/metrics/cycle-time?range=7d|14d|30d|90d`, `GET /api/sprint/active`, and `GET /api/search?q=...` all read Redis first via `get_or_compute_cached` (5m TTL for metrics, 1m TTL for sprint/search) before falling back to PostgreSQL or Elasticsearch (`engineering-events` alias when `ES_ENABLED=true`, PostgreSQL `ILIKE` fallback when `ES_ENABLED=false`).
+   - `GET /health` returns service status, `ENVIRONMENT`, and UTC `Z` timestamp.
+2. **Consistent Error Envelope (`backend/app/main.py`, `frontend/src/lib/api.ts`):**
+   - Global exception handlers catch `StarletteHTTPException` (including `400`, `401`, `404`), `RequestValidationError` (`422`), `RateLimitExceeded` (`429` with `retry_after`), and unhandled `Exception` (`500`), returning `{ "error", "detail", "retry_after"? }`.
+   - Frontend `axios` response interceptor extracts `detail` and `retry_after` for user-facing error states.
+3. **WebSocket Live Feed (`backend/app/routers/ws.py`, `backend/app/services/pubsub.py`):**
+   - `WS /ws/feed` subscribes to Redis Pub/Sub `live-feed` on connect, forwards normalized `{ "type": "event" | "alert", "source", "event_type", "timestamp", "data" }` frames, accepts client `{ "type": "auth", "token" }` messages (enforced in Phase 3A), and unsubscribes/closes Pub/Sub cleanly on disconnect.
+4. **Prometheus Instrumentation (`backend/app/services/metrics.py`, `backend/app/main.py`):**
+   - `prometheus-fastapi-instrumentator` exposes HTTP metrics alongside custom metrics `webhook_events_received_total`, `cache_hit_ratio`, `kafka_consumer_lag`, and `postgres_pool_active_connections` on `GET /metrics`.
 
 ## AWS Infrastructure
 
