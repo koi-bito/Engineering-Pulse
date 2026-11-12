@@ -55,3 +55,22 @@
 **What I learned:** Committing per-record `TopicPartition` offsets—rather than bare `consumer.commit()`—is essential when pairing `getmany()` with manual offset management, and exercising real Uvicorn + container builds catches `ASGITransport`/dev-venv blind spots early.
 
 **Decisions logged in DECISIONS.md:** Yes — ADR-011 through ADR-015.
+
+---
+
+## 2026-11-12 · Phase 1.3 — Read API, WebSocket Live Feed, Error Envelope & Prometheus Metrics
+
+**Problem I was solving:** Building the Redis-first REST query endpoints (`/api/metrics/summary`, `/api/metrics/prs`, `/api/metrics/cycle-time`, `/api/sprint/active`, `/api/search`), consistent error responses across FastAPI and `axios`, `WS /ws/feed` via Redis Pub/Sub, Prometheus `/metrics`, and designing the client WebSocket reconnect strategy ahead of Phase 1.4.
+
+**What I asked AI:** Implement Phase 1.3 cleanly while verifying `prometheus-fastapi-instrumentator`, `redis.asyncio.PubSub`, and `aiokafka` signatures and aligning the WebSocket message/reconnect contract for Phase 1.4 + 3A.
+
+**What AI suggested & verified:**
+- Fixed a subtle FastAPI exception-handler gap in `main.py`: registering `StarletteHTTPException` (instead of only `fastapi.HTTPException`) ensures unknown-route `404` and `405` responses use the standard `{ "error", "detail" }` JSON envelope alongside `400`, `401`, `422`, `429`, and `500`.
+- Extracted a shared `get_or_compute_cached` read-through helper in `app/services/cache.py` that populates the documented cache keys (`metrics:prs_merged_today`, `metrics:avg_cycle_time_7d`, `sprint:active:*`) and updates the Prometheus `cache_hit_ratio` gauge on every lookup, while invalidating range and `"all"` sprint keys on consumer writes.
+- Normalized `publish_live_event` and `WS /ws/feed` so every frame carries `{ "type", "source", "event_type", "timestamp", "data" }` and runs concurrent client-receive and `pubsub.get_message` tasks so disconnects unsubscribe immediately.
+- Planned the Phase 1.4 `useWebSocket` reconnect strategy: exponential backoff on drop, pre-reconnect refresh via `/auth/jwt/refresh` (once Phase 3A auth is active) so expired 15-minute access tokens never cause infinite `4401` reconnect loops, and capping live feed state at 50 items.
+- Instrumented `prometheus-fastapi-instrumentator` plus `webhook_events_received_total`, `cache_hit_ratio`, and periodic `kafka_consumer_lag` polling via `AIOKafkaAdminClient.list_consumer_group_offsets` + `AIOKafkaConsumer.end_offsets`.
+
+**What I learned:** In FastAPI, catching `fastapi.HTTPException` misses router-level `404`s raised by Starlette; and running concurrent reader/forwarder tasks in WebSocket endpoints avoids waiting on Pub/Sub timeouts to detect browser disconnects.
+
+**Decisions logged in DECISIONS.md:** Yes — ADR-016.

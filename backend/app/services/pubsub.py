@@ -17,13 +17,16 @@ async def publish_live_event(
     event_type: str,
     summary: str,
     timestamp: datetime,
+    data: dict[str, Any] | None = None,
 ) -> None:
+    iso_timestamp = _to_utc_iso(timestamp)
+    payload_data = {"summary": summary, "timestamp": iso_timestamp, **(data or {})}
     message = {
         "type": "event",
         "source": source,
         "event_type": event_type,
         "summary": summary,
-        "timestamp": _to_utc_iso(timestamp),
+        "timestamp": iso_timestamp,
+        "data": payload_data,
     }
     await redis_client.publish(LIVE_FEED_CHANNEL, json.dumps(message))
-
