@@ -66,5 +66,8 @@ flowchart LR
 
 ## AWS Infrastructure
 
-_To be filled in Phase 1.5._
+- **Networking (`infra/modules/vpc`):** VPC across 2 AZs with public subnets (ALB + NAT Gateway + EC2) and private subnets (RDS), isolating ports (`80/443` public on ALB → `8000` on EC2 → `5432` on RDS; SSH disabled by default in favor of AWS SSM).
+- **Compute & App Stack (`infra/modules/ec2`, `docker-compose.prod.yml`):** Single `t3.large` (8GB RAM, 50GB encrypted `gp3` EBS, Docker `50m x 3` log rotation) running Kafka (KRaft, 7d/1GB retention), `kafka-init`, Redis, Prometheus (`15d`/`5GB` retention), Grafana, FastAPI, and the three Kafka consumers with `ES_ENABLED=false` during Phases 1–4.
+- **Database & Secrets (`infra/modules/rds`):** Private RDS PostgreSQL 16 (`db.t3.micro`, 7-day backups, encryption at rest) using AWS-managed Secrets Manager (`manage_master_user_password = true`) plus an app secret fetched at bootstrap via a least-privilege IAM instance profile (IMDSv2, zero static AWS keys).
+- **Frontend & Ingestion Edge (`infra/modules/alb`, `infra/modules/s3`, `infra/modules/cloudfront`):** ALB health-checking `GET /health` forwards API/WebSocket traffic (`120s` idle timeout) to EC2:8000; static Vite assets sit in a private versioned S3 bucket served over HTTPS via CloudFront Origin Access Control (OAC), alongside a dedicated private S3 bucket for raw webhook archives (`30d` → `STANDARD_IA`, `365d` expiration).
 

@@ -253,3 +253,74 @@
 **Reasons:**
 - Handles request deduplication, stale-while-revalidate caching, `refetchInterval: 60_000`, and unmount race cancellation without boilerplate.
 - Makes Phase 3B team switching (`queryClient.invalidateQueries()`) a one-line operation.
+
+---
+
+## ADR-018 — EC2 `t3.large` (8GB) over `t3.medium`, with ES excluded in Phases 1–4
+
+**Date:** 2026-11-12
+**Status:** Accepted
+
+**Context:** Kafka (KRaft), Redis, Prometheus, Grafana, FastAPI, and three consumers co-locate on a single EC2 host; `t3.medium` (4GB RAM) risks silent OOM kills, and Elasticsearch requires ~1GB+ JVM heap.
+
+**Decision:** Provision `t3.large` (8GB RAM, 50GB gp3 EBS with Docker log rotation) and use `docker-compose.prod.yml` with `ES_ENABLED=false` during Phases 1–4, restoring ES in Phase 5.
+
+**Reasons:**
+- Leaves comfortable memory headroom across all containers and keeps Phase 1–4 AWS costs modest (~$30/mo delta vs `t3.medium` prevents OOM instability).
+
+---
+
+## ADR-019 — Ephemeral Redis on EC2 accepted for portfolio scope
+
+**Date:** 2026-11-12
+**Status:** Accepted
+
+**Context:** Running managed Multi-AZ ElastiCache adds recurring cost and complexity beyond portfolio needs, whereas the single EC2 host already runs Redis for caching, Pub/Sub, rate limiting, and webhook idempotency.
+
+**Decision:** Run containerized Redis with persistent local volume on EC2 without cross-AZ backup/replication for portfolio scope.
+
+**Trade-offs accepted & upgrade path:**
+- On EC2 loss: cached metrics rebuild from RDS on next query, rate-limit counters reset, and 24h webhook idempotency keys clear (downstream Postgres upserts remain idempotent).
+- Production upgrade path: Amazon ElastiCache for Redis with Multi-AZ replication.
+
+---
+
+## ADR-020 — Self-hosted Kafka (KRaft) on EC2 over Amazon MSK
+
+**Date:** 2026-11-12
+**Status:** Accepted
+
+**Context:** Managed Amazon MSK costs significantly more per month and introduces VPC/TLS configuration overhead unnecessary for single-node portfolio traffic.
+
+**Decision:** Run `confluentinc/cp-kafka` in KRaft mode (`1GB`/7-day log retention) inside `docker-compose.prod.yml` on EC2.
+
+**Reasons:**
+- Keeps infrastructure parity with local dev while containing cost; production upgrade path is Amazon MSK (`3` brokers across AZs).
+
+---
+
+## ADR-021 — EC2 IAM instance profile over static AWS access keys
+
+**Date:** 2026-11-12
+**Status:** Accepted
+
+**Context:** The EC2 host needs access to S3 (`PutObject`/`GetObject`/`ListBucket`), Secrets Manager, and RDS without risking leaked credentials on disk or in `.env`.
+
+**Decision:** Attach a least-privilege IAM instance profile (`engineering-pulse-ec2-profile`) using IMDSv2 (`http_tokens = "required"`) and omit static AWS keys from `docker-compose.prod.yml`.
+
+**Reasons:**
+- Credentials rotate automatically via IMDSv2 and never sit in git, Terraform variables, or `.env`.
+
+---
+
+## ADR-022 — Single EC2 instance as accepted SPOF for portfolio scope
+
+**Date:** 2026-11-12
+**Status:** Accepted
+
+**Context:** Kafka, consumers, FastAPI, Redis, Prometheus, and Grafana all run on a single `t3.large` behind an ALB, while RDS and S3 sit outside the instance.
+
+**Decision:** Accept the single EC2 instance as a conscious single point of failure for portfolio scope rather than provisioning multi-node clustering early.
+
+**Production upgrade path:**
+- Move API and consumers to ECS/EKS across 2+ AZs, Kafka to Amazon MSK, Redis to Multi-AZ ElastiCache, and enable RDS Multi-AZ.
