@@ -238,3 +238,18 @@
 
 **Trade-offs accepted:**
 - Redis Pub/Sub is fire-and-forget (at-most-once delivery for connected UI viewers); historical state remains durable in PostgreSQL and is fetched via REST on connect/reconnect.
+
+---
+
+## ADR-017 — `@tanstack/react-query` over raw `useEffect` for dashboard fetching
+
+**Date:** 2026-11-12
+**Status:** Accepted
+
+**Context:** Dashboard panels (`summary`, `prs`, `cycle-time`, `sprint`, `search`) need loading/error states, 60-second background polling, debounced search caching, and later team-switch cache invalidation (Phase 3B).
+
+**Decision:** Use `@tanstack/react-query` (`useQuery`) backed by typed `axios` helpers in `frontend/src/lib/api.ts` rather than manual `useEffect` + `useState` fetch logic.
+
+**Reasons:**
+- Handles request deduplication, stale-while-revalidate caching, `refetchInterval: 60_000`, and unmount race cancellation without boilerplate.
+- Makes Phase 3B team switching (`queryClient.invalidateQueries()`) a one-line operation.
