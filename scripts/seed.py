@@ -105,6 +105,9 @@ def generate_events(
                 second=rng.randint(0, 59),
                 microsecond=0,
             )
+            if event_time >= now:
+                # Avoid future "today" timestamps that would invert merged/resolved clamping.
+                event_time -= timedelta(days=1)
             author = rng.choice(AUTHORS)
             repo = rng.choice(repo_names)
             roll = rng.random()
