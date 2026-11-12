@@ -1,0 +1,62 @@
+#!/bin/bash
+set -euo pipefail
+
+mkdir -p /etc/docker
+cat <<'EOF' > /etc/docker/daemon.json
+{
+  "log-driver": "json-file",
+  "log-opts": { "max-size": "50m", "max-file": "3" }
+}
+EOF
+
+dnf update -y
+dnf install -y docker git jq
+
+mkdir -p /usr/local/lib/docker/cli-plugins
+curl -fsSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64" \
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+systemctl enable --now docker
+usermod -aG docker ec2-user || true
+
+APP_DIR=/opt/engineering-pulse
+if [ ! -d "$APP_DIR" ]; then
+  git clone --branch "${repo_branch}" "${repo_url}" "$APP_DIR"
+else
+  git -C "$APP_DIR" fetch origin && git -C "$APP_DIR" checkout "${repo_branch}" && git -C "$APP_DIR" pull --ff-only
+fi
+
+DB_SECRET=$(aws secretsmanager get-secret-value --region "${aws_region}" --secret-id "${master_user_secret_arn}" --query SecretString --output text)
+DB_USER=$(echo "$DB_SECRET" | jq -r '.username')
+DB_PASS_ENC=$(echo "$DB_SECRET" | jq -rn --arg v "$(echo "$DB_SECRET" | jq -r '.password')" '$v | @uri')
+
+APP_SECRET=$(aws secretsmanager get-secret-value --region "${aws_region}" --secret-id "${app_secrets_arn}" --query SecretString --output text 2>/dev/null || echo '{}')
+GITHUB_SECRET=$(echo "$APP_SECRET" | jq -r '.github_webhook_secret // ""')
+JIRA_SECRET=$(echo "$APP_SECRET" | jq -r '.jira_webhook_secret // ""')
+GRAFANA_PASS=$(echo "$APP_SECRET" | jq -r '.grafana_admin_password // ""')
+
+cat <<EOF > "$APP_DIR/.env"
+ENVIRONMENT=production
+DATABASE_URL=postgresql+asyncpg://$${DB_USER}:$${DB_PASS_ENC}@${rds_endpoint}/${db_name}
+REDIS_URL=redis://redis:6379/0
+KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+ES_ENABLED=false
+AWS_REGION=${aws_region}
+S3_BUCKET_NAME=${raw_events_bucket_name}
+CORS_ORIGINS=${cors_origin}
+WEBHOOK_RATE_LIMIT=100/minute
+GITHUB_WEBHOOK_SECRET=$${GITHUB_SECRET}
+JIRA_WEBHOOK_SECRET=$${JIRA_SECRET}
+GRAFANA_ADMIN_USER=admin
+GRAFANA_ADMIN_PASSWORD=$${GRAFANA_PASS}
+EOF
+chmod 600 "$APP_DIR/.env"
+
+if [ -n "$GITHUB_SECRET" ] && [ -n "$JIRA_SECRET" ] && [ -n "$GRAFANA_PASS" ]; then
+  cd "$APP_DIR"
+  docker compose -f docker-compose.prod.yml up -d --build
+else
+  echo "Secrets in ${app_secrets_arn} not populated yet; populate them and run: cd $APP_DIR && docker compose -f docker-compose.prod.yml up -d --build"
+fi
+

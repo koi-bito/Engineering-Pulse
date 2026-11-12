@@ -91,3 +91,21 @@
 **What I learned:** Separating pure state/mapping logic from `.tsx` components lets Node's built-in test runner verify frontend logic directly without adding Jest/Vitest dependencies.
 
 **Decisions logged in DECISIONS.md:** Yes — ADR-017.
+
+---
+
+## 2026-11-12 · Phase 1.5 — AWS Infrastructure (Terraform), Production Compose & Runbook
+
+**Problem I was solving:** Provisioning reproducible AWS infrastructure (VPC, ALB, EC2 `t3.large`, private RDS PostgreSQL 16, S3 buckets, CloudFront + OAC, IAM instance profile, Secrets Manager) alongside a production Compose definition (`docker-compose.prod.yml`) and operations runbook (`RUNBOOK.md`).
+
+**What I asked AI:** Build modular Terraform under `infra/` matching `Building plan.md` Phase 1.5, enforce least-privilege networking and IAM, avoid hardcoded secrets in state/compose, and provide a production Compose file excluding local dev services (`postgres`, `localstack`, and `elasticsearch` during Phases 1–4).
+
+**What AI suggested & verified:**
+- Split Terraform into six clean modules (`vpc`, `s3`, `rds`, `cloudfront`, `ec2`, `alb`) wired via `infra/main.tf` with S3/DynamoDB remote state in `infra/backend.tf` and zero circular dependencies (`ec2` consumes `cloudfront.domain_name` for `CORS_ORIGINS`, while `alb` attaches `ec2.instance_id`).
+- Used RDS `manage_master_user_password = true` plus a dedicated `aws_secretsmanager_secret` (`engineering-pulse/app-secrets`) read at boot via the EC2 IAM instance profile (IMDSv2 enforced, SSM Session Manager enabled with SSH port 22 closed by default).
+- Configured `user_data.sh.tftpl` (with LF line endings enforced in `.gitattributes`) to set Docker `json-file` log rotation (`50m x 3`), URL-encode the RDS password via `jq`, write `/opt/engineering-pulse/.env` (`0600`), and boot `docker-compose.prod.yml` once Secrets Manager values exist.
+- Created `RUNBOOK.md` covering S3/DynamoDB state bootstrap, SSM EC2 access, `/index.html`-only CloudFront cache invalidation, and the RDS snapshot test-restore procedure, plus `backend/locustfile.py` for Phase 1 load measurement.
+
+**What I learned:** Using AWS-managed RDS Secrets Manager rotation (`manage_master_user_password = true`) + URL-encoding the retrieved password in bootstrap scripts eliminates plaintext DB credentials from both Terraform state and EC2 templates while preventing special-character DSN parse errors.
+
+**Decisions logged in DECISIONS.md:** Yes — ADR-018 through ADR-022.

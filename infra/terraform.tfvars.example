@@ -1,0 +1,12 @@
+aws_region             = "us-east-1"
+project_name           = "engineering-pulse"
+environment            = "production"
+raw_events_bucket_name = "engineering-pulse-raw-events-REPLACE_ME"
+frontend_bucket_name   = "engineering-pulse-frontend-REPLACE_ME"
+repo_url               = "https://github.com/koi-bito/Engineering-Pulse.git"
+repo_branch            = "main"
+# Optional: enable HTTPS on ALB and restricted SSH access
+# alb_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/..."
+# ec2_key_name        = "my-keypair"
+# ssh_allowed_cidr    = "203.0.113.10/32"
+
