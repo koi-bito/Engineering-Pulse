@@ -74,3 +74,20 @@
 **What I learned:** In FastAPI, catching `fastapi.HTTPException` misses router-level `404`s raised by Starlette; and running concurrent reader/forwarder tasks in WebSocket endpoints avoids waiting on Pub/Sub timeouts to detect browser disconnects.
 
 **Decisions logged in DECISIONS.md:** Yes — ADR-016.
+
+---
+
+## 2026-11-12 · Phase 1.4 — React Dashboard, Recharts Panels, Debounced Search & Reconnecting WebSocket
+
+**Problem I was solving:** Building the Phase 1.4 React dashboard (`OverviewPanel`, `SprintBoard`, `SearchPanel`), live `useWebSocket` hook with 50-event cap and token-refresh-ready reconnects, loading skeletons, error recovery, 60s auto-refresh, and responsive 1280px layout.
+
+**What I asked AI:** Implement Phase 1.4 using the existing `@tanstack/react-query`, `axios`, and `recharts` dependencies and align the UI payloads with Phase 1.3's API and WebSocket protocol.
+
+**What AI suggested & verified:**
+- Implemented `useWebSocket` in `frontend/src/hooks/useWebSocket.ts` with exponential backoff (`1s` → `30s` cap), 50-item event cap, `4401` loop prevention, and an optional `refreshToken` callback before reconnecting so Phase 3A JWT expiry refreshes cleanly instead of looping.
+- Built `OverviewPanel` (5 summary KPIs, 14-day Recharts `BarChart`, 30-day rolling average `LineChart`, and scrolling live feed), `SprintBoard` (canonical `To Do` / `In Progress` / `Done` + dynamic status columns and project filter), and `SearchPanel` (300ms debounced `GET /api/search?q=`), sharing `SkeletonBlock` and `ErrorBanner` in `PanelState.tsx`.
+- Extracted pure TypeScript helpers (`groupTicketsByStatus`, `getWebSocketUrl`, `parseLiveFeedMessage`, `prependLiveEvent`, `nextReconnectDelayMs`) into `.ts` modules so `node --test tests/dashboard.test.ts` verifies them natively alongside `tsc -b && vite build`.
+
+**What I learned:** Separating pure state/mapping logic from `.tsx` components lets Node's built-in test runner verify frontend logic directly without adding Jest/Vitest dependencies.
+
+**Decisions logged in DECISIONS.md:** Yes — ADR-017.

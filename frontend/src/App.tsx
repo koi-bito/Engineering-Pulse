@@ -1,9 +1,12 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Header } from "./components/Header";
-import { Sidebar, type Section } from "./components/Sidebar";
-import { useWebSocket } from "./hooks/useWebSocket";
-import { api } from "./lib/api";
+import { Header } from "./components/Header.tsx";
+import { OverviewPanel } from "./components/OverviewPanel.tsx";
+import { SearchPanel } from "./components/SearchPanel.tsx";
+import { Sidebar, type Section } from "./components/Sidebar.tsx";
+import { SprintBoard } from "./components/SprintBoard.tsx";
+import { useWebSocket } from "./hooks/useWebSocket.ts";
+import { api } from "./lib/api.ts";
 import "./App.css";
 
 interface HealthResponse {
@@ -12,9 +15,15 @@ interface HealthResponse {
   timestamp: string;
 }
 
+const SECTION_TITLES: Record<Section, string> = {
+  overview: "Engineering Overview",
+  sprint: "Active Sprint Board",
+  search: "Event Search",
+};
+
 export function App() {
   const [section, setSection] = useState<Section>("overview");
-  const { status: wsStatus } = useWebSocket();
+  const { status: wsStatus, events } = useWebSocket();
 
   const healthQuery = useQuery({
     queryKey: ["health"],
@@ -22,6 +31,7 @@ export function App() {
       const { data } = await api.get<HealthResponse>("/health");
       return data;
     },
+    refetchInterval: 60_000,
     retry: false,
   });
 
@@ -34,21 +44,26 @@ export function App() {
       <Header
         apiHealthy={apiHealthy}
         environment={healthQuery.data?.environment}
+        wsStatus={wsStatus}
       />
       <div className="ep-body">
         <Sidebar active={section} onSelect={setSection} />
         <main className="ep-main">
-          <h2>{section.charAt(0).toUpperCase() + section.slice(1)}</h2>
-          <p className="ep-muted">
-            Phase 0 shell ready. WebSocket status: <code>{wsStatus}</code>.
+          <div className="ep-page-head">
+            <h2>{SECTION_TITLES[section]}</h2>
             {healthQuery.data?.timestamp && (
-              <>
-                {" "}
-                Last API check (local time):{" "}
-                {new Date(healthQuery.data.timestamp).toLocaleString()}.
-              </>
+              <span className="ep-muted">
+                Last API check:{" "}
+                {new Date(healthQuery.data.timestamp).toLocaleTimeString()}
+              </span>
             )}
-          </p>
+          </div>
+
+          {section === "overview" && (
+            <OverviewPanel wsStatus={wsStatus} events={events} />
+          )}
+          {section === "sprint" && <SprintBoard />}
+          {section === "search" && <SearchPanel />}
         </main>
       </div>
     </div>
@@ -56,4 +71,3 @@ export function App() {
 }
 
 export default App;
-
