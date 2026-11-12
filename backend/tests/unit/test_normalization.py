@@ -1,4 +1,6 @@
+import sys
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -119,3 +121,33 @@ def test_normalize_jira_ticket_and_transitions_convert_to_utc() -> None:
     assert transitions[0].from_status == "In Progress"
     assert transitions[0].to_status == "Done"
     assert transitions[0].transitioned_at.tzinfo == UTC
+
+
+def test_seed_generate_events_validates_early_utc_day(monkeypatch: pytest.MonkeyPatch) -> None:
+    scripts_dir = str(Path(__file__).resolve().parents[3] / "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    import seed
+
+    fixed_now = datetime(2026, 11, 11, 6, 0, 0, tzinfo=UTC)
+
+    class _EarlyUtcDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now if tz is None else fixed_now.astimezone(tz)
+
+    monkeypatch.setattr(seed, "datetime", _EarlyUtcDatetime)
+    events = seed.generate_events(days=5, teams=2, repos=2, base_volume=10)
+    assert len(events) > 0
+
+    for source, event_type, _, payload in events:
+        if source == "github" and event_type == "pull_request":
+            pr = normalize_github_pr(payload)
+            assert pr.opened_at <= fixed_now
+        elif source == "github" and event_type == "push":
+            commits = normalize_github_commits(payload)
+            assert len(commits) >= 1
+        elif source == "jira":
+            ticket = normalize_jira_ticket(payload)
+            assert ticket.created_at <= fixed_now
+            normalize_jira_transitions(payload)

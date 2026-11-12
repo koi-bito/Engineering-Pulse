@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 import redis.asyncio as redis_async
 import structlog
 from botocore.exceptions import BotoCoreError, ClientError
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -77,26 +77,29 @@ def _register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RateLimitExceeded)
     async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
-        response = JSONResponse(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            content=_error_payload("rate_limit_exceeded", f"Rate limit exceeded: {exc.detail}"),
-        )
+        extra_headers: dict[str, str] = {}
+        retry_after: int | None = None
         limiter = getattr(request.app.state, "limiter", None)
         view_rate_limit = getattr(request.state, "view_rate_limit", None)
         if limiter is not None and view_rate_limit is not None:
-            response = limiter._inject_headers(response, view_rate_limit)
-            retry_after_header = response.headers.get("Retry-After")
+            header_probe = limiter._inject_headers(Response(), view_rate_limit)
+            extra_headers = {
+                k: v
+                for k, v in header_probe.headers.items()
+                if k.lower() not in ("content-length", "content-type")
+            }
+            retry_after_header = header_probe.headers.get("Retry-After")
             if retry_after_header and retry_after_header.isdigit():
-                response = JSONResponse(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    content=_error_payload(
-                        "rate_limit_exceeded",
-                        f"Rate limit exceeded: {exc.detail}",
-                        retry_after=int(retry_after_header),
-                    ),
-                    headers=dict(response.headers),
-                )
-        return response
+                retry_after = int(retry_after_header)
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content=_error_payload(
+                "rate_limit_exceeded",
+                f"Rate limit exceeded: {exc.detail}",
+                retry_after=retry_after,
+            ),
+            headers=extra_headers,
+        )
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(_: Request, exc: Exception) -> JSONResponse:

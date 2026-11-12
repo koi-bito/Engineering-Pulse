@@ -206,3 +206,17 @@
 
 **Reasons:**
 - Consumers run cleanly in production with `ES_ENABLED=false` during Phases 1–4 and Phase 5 can swap `v1 -> v2` atomically with zero consumer code changes.
+
+---
+
+## ADR-015 — Producer retries + S3 archive over Kafka exactly-once
+
+**Date:** 2026-11-11
+**Status:** Accepted
+
+**Context:** True end-to-end exactly-once semantics across webhooks, Kafka, PostgreSQL, and Elasticsearch require distributed transactions or idempotent producer + consumer coordination with higher operational complexity.
+
+**Decision:** Configure `AIOKafkaProducer` with `acks="all"`, `request_timeout_ms=30000`, `retry_backoff_ms=500`, await `send_and_wait` sequentially per webhook, archive raw payloads in S3 before publishing, and release Redis idempotency keys on failure.
+
+**Reasons:**
+- Combines at-least-once delivery with idempotent downstream Postgres/ES writes while keeping S3 as a replayable fallback when Kafka is unavailable.

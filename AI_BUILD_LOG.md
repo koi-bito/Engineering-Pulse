@@ -50,7 +50,8 @@
 - Used `postgresql+asyncpg` async Alembic `env.py` + `asyncpg` polling inside `wait-for-migrations.sh` so consumers wait for migrations cleanly inside `python:3.12-slim` without needing `psql`.
 - Created index `engineering-events-v1` behind alias `engineering-events` from day one so Phase 5's zero-downtime reindex needs no consumer changes.
 - Designed `scripts/seed.py` (Pass 2) with weekend dips, 14-day sprint-end spikes, burst deploys, stalled PRs, and `429 Retry-After` handling so 90-day seeding works reliably against the webhook receiver.
+- Containerized integration testing with `--volume medium` uncovered three real edge-case bugs that unit mocks had missed: missing `sqlalchemy[asyncio]` (`greenlet`) in non-dev deps for `ep-api` migrations, a stale `Content-Length` crash in `rate_limit_handler` on `429` responses, and future/inverted timestamps generated on `day_offset == 0` in `scripts/seed.py` — all fixed with regression assertions added.
 
-**What I learned:** Committing per-record `TopicPartition` offsets—rather than bare `consumer.commit()`—is essential when pairing `getmany()` with manual offset management.
+**What I learned:** Committing per-record `TopicPartition` offsets—rather than bare `consumer.commit()`—is essential when pairing `getmany()` with manual offset management, and exercising real Uvicorn + container builds catches `ASGITransport`/dev-venv blind spots early.
 
-**Decisions logged in DECISIONS.md:** Yes — ADR-011 through ADR-014.
+**Decisions logged in DECISIONS.md:** Yes — ADR-011 through ADR-015.

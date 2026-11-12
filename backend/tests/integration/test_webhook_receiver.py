@@ -173,6 +173,7 @@ async def test_webhook_rate_limit_enforced_per_secret_with_retry_after() -> None
 
     assert limited.status_code == 429
     assert "Retry-After" in limited.headers
+    assert int(limited.headers["content-length"]) == len(limited.content)
     payload = limited.json()
     assert payload["error"] == "rate_limit_exceeded"
     assert isinstance(payload["retry_after"], int)
