@@ -4,6 +4,7 @@ from typing import Annotated, Any
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
+from fastapi_users import exceptions
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -194,13 +195,6 @@ async def register(
 ) -> UserRead:
     """Create an organization, initial team, and first admin user in one transaction."""
     check_auth_rate_limit(request, register)
-    existing_user = await user_manager.get_by_email(body.email)
-    if existing_user is not None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="REGISTER_USER_ALREADY_EXISTS",
-        )
-
     org_id = uuid.uuid4()
     team_id = uuid.uuid4()
 
@@ -212,7 +206,13 @@ async def register(
         role="admin",
     )
 
-    created_user = await user_manager.create(user_create, request=request)
+    try:
+        created_user = await user_manager.create(user_create, request=request)
+    except exceptions.UserAlreadyExists:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="REGISTER_USER_ALREADY_EXISTS",
+        )
     logger.info(
         "org_and_admin_created",
         org_name=body.org_name,

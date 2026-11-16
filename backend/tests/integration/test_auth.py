@@ -264,32 +264,36 @@ def test_ws_feed_requires_auth_token_in_first_message(auth_app, user_db: InMemor
     user = user_db.users[uuid.UUID("11111111-1111-1111-1111-111111111111")]
     valid_token = generate_access_token(user)
 
-    client = TestClient(auth_app)
+    with TestClient(auth_app) as client:
+        # 1. Unauthenticated or invalid first frame should be rejected with 4401
+        with client.websocket_connect("/ws/feed") as ws:
+            ws.send_json({"type": "bad_type", "token": "foo"})
+            # Expect immediate close with 4401
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                ws.receive_json()
+            assert exc_info.value.code == 4401
 
-    # 1. Unauthenticated or invalid first frame should be rejected with 4401
-    with client.websocket_connect("/ws/feed") as ws:
-        ws.send_json({"type": "bad_type", "token": "foo"})
-        # Expect immediate close with 4401
-        with pytest.raises(WebSocketDisconnect) as exc_info:
-            ws.receive_json()
-        assert exc_info.value.code == 4401
+        # 2. Valid auth frame connects and streams
+        with client.websocket_connect("/ws/feed") as ws:
+            ws.send_json({"type": "auth", "token": valid_token})
+            for _ in range(50):
+                if auth_app.state.redis.subscribers.get(LIVE_FEED_CHANNEL):
+                    break
+                import time
+                time.sleep(0.02)
 
-    # 2. Valid auth frame connects and streams
-    with client.websocket_connect("/ws/feed") as ws:
-        ws.send_json({"type": "auth", "token": valid_token})
-
-        auth_app.state.redis.publish_sync(
-            LIVE_FEED_CHANNEL,
-            json.dumps(
-                {
-                    "type": "event",
-                    "source": "github",
-                    "event_type": "pull_request",
-                    "summary": "PR #1 merged",
-                    "timestamp": "2026-11-16T12:00:00Z",
-                }
-            ),
-        )
-        msg = ws.receive_json()
-        assert msg["type"] == "event"
-        assert msg["data"]["summary"] == "PR #1 merged"
+            auth_app.state.redis.publish_sync(
+                LIVE_FEED_CHANNEL,
+                json.dumps(
+                    {
+                        "type": "event",
+                        "source": "github",
+                        "event_type": "pull_request",
+                        "summary": "PR #1 merged",
+                        "timestamp": "2026-11-16T12:00:00Z",
+                    }
+                ),
+            )
+            msg = ws.receive_json()
+            assert msg["type"] == "event"
+            assert msg["data"]["summary"] == "PR #1 merged"
