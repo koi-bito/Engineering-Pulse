@@ -6,11 +6,13 @@ on:
     paths:
       - "frontend/**"
       - ".github/workflows/deploy-frontend.yml"
+  workflow_dispatch:
 
 jobs:
   deploy:
     name: Build & Sync to S3 / CloudFront
     runs-on: ubuntu-latest
+    if: ${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.S3_FRONTEND_BUCKET != '' }}
     defaults:
       run:
         working-directory: frontend
