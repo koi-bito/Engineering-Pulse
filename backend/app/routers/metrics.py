@@ -17,16 +17,17 @@ from app.db.repositories import (
 from app.services.cache import (
     AVG_CYCLE_TIME_7D_KEY,
     METRICS_CACHE_TTL_SECONDS,
-    METRICS_SUMMARY_KEY,
     PRS_MERGED_TODAY_KEY,
     SEARCH_CACHE_TTL_SECONDS,
     SPRINT_CACHE_TTL_SECONDS,
     get_or_compute_cached,
     metrics_cycle_time_key,
     metrics_prs_key,
+    metrics_summary_key,
     search_cache_key,
     set_cached_json,
     sprint_active_key,
+    tenant_prefix,
 )
 from app.services.es_index import ES_ALIAS
 
@@ -64,27 +65,31 @@ async def _run_db_query(
 
 @router.get("/metrics/summary")
 async def get_metrics_summary(request: Request) -> dict[str, Any]:
+    org_id = getattr(request.state, "org_id", None)
+    team_id = getattr(request.state, "team_id", None)
     redis_client = request.app.state.redis
+    cache_key = metrics_summary_key(org_id, team_id)
 
     async def _load() -> dict[str, Any]:
-        summary = await _run_db_query(request, fetch_metrics_summary)
+        summary = await _run_db_query(request, fetch_metrics_summary, team_id)
         # Keep the documented individual metric keys populated alongside the aggregate summary.
+        p = tenant_prefix(org_id, team_id)
         await set_cached_json(
             redis_client,
-            PRS_MERGED_TODAY_KEY,
+            f"{p}{PRS_MERGED_TODAY_KEY}",
             summary["prs_merged_today"],
             METRICS_CACHE_TTL_SECONDS,
         )
         await set_cached_json(
             redis_client,
-            AVG_CYCLE_TIME_7D_KEY,
+            f"{p}{AVG_CYCLE_TIME_7D_KEY}",
             summary["avg_cycle_time_7d_hours"],
             METRICS_CACHE_TTL_SECONDS,
         )
         return summary
 
     summary, _ = await get_or_compute_cached(
-        redis_client, METRICS_SUMMARY_KEY, METRICS_CACHE_TTL_SECONDS, _load
+        redis_client, cache_key, METRICS_CACHE_TTL_SECONDS, _load
     )
     return summary
 
@@ -95,14 +100,16 @@ async def get_pr_metrics(
     range: str = Query(default="7d"),
 ) -> dict[str, Any]:
     days = _parse_range_days(range)
+    org_id = getattr(request.state, "org_id", None)
+    team_id = getattr(request.state, "team_id", None)
     redis_client = request.app.state.redis
 
     async def _load() -> dict[str, Any]:
-        series = await _run_db_query(request, fetch_pr_daily_counts, days)
+        series = await _run_db_query(request, fetch_pr_daily_counts, days, team_id)
         return {"range": range, "days": days, "series": series}
 
     data, _ = await get_or_compute_cached(
-        redis_client, metrics_prs_key(range), METRICS_CACHE_TTL_SECONDS, _load
+        redis_client, metrics_prs_key(range, org_id, team_id), METRICS_CACHE_TTL_SECONDS, _load
     )
     return data
 
@@ -113,14 +120,16 @@ async def get_cycle_time_metrics(
     range: str = Query(default="30d"),
 ) -> dict[str, Any]:
     days = _parse_range_days(range)
+    org_id = getattr(request.state, "org_id", None)
+    team_id = getattr(request.state, "team_id", None)
     redis_client = request.app.state.redis
 
     async def _load() -> dict[str, Any]:
-        series = await _run_db_query(request, fetch_cycle_time_series, days)
+        series = await _run_db_query(request, fetch_cycle_time_series, days, team_id)
         return {"range": range, "days": days, "series": series}
 
     data, _ = await get_or_compute_cached(
-        redis_client, metrics_cycle_time_key(range), METRICS_CACHE_TTL_SECONDS, _load
+        redis_client, metrics_cycle_time_key(range, org_id, team_id), METRICS_CACHE_TTL_SECONDS, _load
     )
     return data
 
@@ -131,11 +140,13 @@ async def get_active_sprint(
     project: str | None = Query(default=None),
 ) -> dict[str, Any]:
     project_key = project.strip() if project and project.strip() else None
-    cache_key = sprint_active_key(project_key or "all")
+    org_id = getattr(request.state, "org_id", None)
+    team_id = getattr(request.state, "team_id", None)
+    cache_key = sprint_active_key(project_key or "all", org_id, team_id)
     redis_client = request.app.state.redis
 
     async def _load() -> dict[str, Any]:
-        return await _run_db_query(request, fetch_active_sprint, project_key)
+        return await _run_db_query(request, fetch_active_sprint, project_key, team_id)
 
     data, _ = await get_or_compute_cached(
         redis_client, cache_key, SPRINT_CACHE_TTL_SECONDS, _load
@@ -143,16 +154,32 @@ async def get_active_sprint(
     return data
 
 
-async def _search_elasticsearch(es_client: Any, query: str, limit: int) -> dict[str, Any]:
+async def _search_elasticsearch(
+    es_client: Any,
+    query: str,
+    limit: int,
+    team_id: Any | None = None,
+) -> dict[str, Any]:
+    match_query: dict[str, Any] = {
+        "multi_match": {
+            "query": query,
+            "fields": ["title", "summary", "message"],
+        }
+    }
+    if team_id:
+        es_query: dict[str, Any] = {
+            "bool": {
+                "must": [match_query],
+                "filter": [{"term": {"team_id": str(team_id)}}],
+            }
+        }
+    else:
+        es_query = match_query
+
     try:
         response = await es_client.search(
             index=ES_ALIAS,
-            query={
-                "multi_match": {
-                    "query": query,
-                    "fields": ["title", "summary", "message"],
-                }
-            },
+            query=es_query,
             size=limit,
         )
     except NotFoundError:
@@ -197,18 +224,23 @@ async def search_events(
             detail="Search query 'q' cannot be blank",
         )
 
+    org_id = getattr(request.state, "org_id", None)
+    team_id = getattr(request.state, "team_id", None)
     cfg = _get_settings(request)
     redis_client = request.app.state.redis
     es_client = getattr(request.app.state, "es_client", None)
 
     async def _load() -> dict[str, Any]:
         if cfg.ES_ENABLED and es_client is not None:
-            return await _search_elasticsearch(es_client, cleaned, limit)
-        results = await _run_db_query(request, search_events_postgres, cleaned, limit)
+            return await _search_elasticsearch(es_client, cleaned, limit, team_id=team_id)
+        results = await _run_db_query(request, search_events_postgres, cleaned, limit, team_id)
         return {"query": cleaned, "total_hits": len(results), "results": results}
 
     data, _ = await get_or_compute_cached(
-        redis_client, search_cache_key(cleaned, limit), SEARCH_CACHE_TTL_SECONDS, _load
+        redis_client,
+        search_cache_key(cleaned, limit, org_id, team_id),
+        SEARCH_CACHE_TTL_SECONDS,
+        _load,
     )
     return data
 

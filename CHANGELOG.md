@@ -5,6 +5,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [Phase 3B] - 2026-11-17
+
+### Added
+- **Multi-Tenant Data Modeling & Database Migration:**
+  - Added Alembic migration `0003_multi_tenant_schema.py` creating `orgs`, `teams`, `team_members`, and `webhook_registrations` tables with bidirectional `upgrade()` and `downgrade()`.
+  - Added `org_id` and `team_id` columns with foreign keys and composite performance indexes to event tables (`pull_requests`, `commits`, `jira_tickets`, `jira_transitions`).
+  - Added SQLAlchemy models in `backend/app/models/tenant.py`.
+- **Tenant Context Propagation & Context Switching:**
+  - Updated `JWTAuthMiddleware` to extract `org_id` and `team_id` claims into `request.state`.
+  - Added support for `X-Team-ID` request header, allowing users to switch team contexts within their organization without token reissuance.
+  - Added `allow_headers=["Authorization", "Content-Type", "X-Team-ID"]` in CORS middleware.
+- **Tenant Isolation Across Data Stores:**
+  - **PostgreSQL:** Repositories filter all metric summaries, PR counts, cycle times, active sprint tickets, and PostgreSQL search by `team_id`.
+  - **Redis Cache:** Partitioned cache keys by tenant (`{org_id}:{team_id}:metrics:*`) and implemented scoped cache invalidation (`invalidate_metrics_cache`).
+  - **Elasticsearch:** Updated event document index mapping with `org_id` and `team_id` keywords and scoped search queries with `{"term": {"team_id": "..."}}`.
+  - **Live Pub/Sub:** Published live events to team-specific channels (`live-feed:{team_id}`) alongside global feed.
+- **Webhook Tenant Attribution & Secret Registry:**
+  - Created `webhook_registrations` registry for per-team webhook secrets (`POST /api/orgs/{org_id}/webhooks/register`).
+  - Supported incoming webhooks with secret-based tenant resolution and developer headers (`X-Org-ID`, `X-Team-ID`).
+  - Extended `WebhookEnvelope` schema to carry tenant attribution through Kafka.
+- **Tenant Management Endpoints:**
+  - `GET /api/teams`: Lists all teams for the user's organization.
+  - `POST /api/teams`: Allows admin users to create new teams.
+  - `POST /api/orgs/{org_id}/webhooks/register`: Protected endpoint for registering team webhook secrets.
+- **Multi-Tenant Seed Scripts:**
+  - Updated `scripts/seed.py` and `scripts/seed_kafka.py` supporting `--org` and `--team` CLI flags.
+  - Built-in multi-tenant distribution generating realistic events across 2 organizations and 4 teams.
+- **Frontend Team Switcher:**
+  - Added responsive team switcher dropdown to `Header.tsx` populated via `fetchTeams()`.
+  - Added automatic query invalidation on team switch via React Query `queryClient.invalidateQueries()`.
+  - Injected `X-Team-ID` header into all Axios requests via request interceptor.
+- **Zero-Leakage Integration Tests:**
+  - Added `backend/tests/integration/test_multitenancy.py` proving zero cross-tenant data leakage across queries, cache keys, and context switching.
+- **Architecture & Decision Records:**
+  - Added `ADR-029` (Application-Level Tenant Scoping vs PostgreSQL RLS) and `ADR-030` (Webhook Secret Registry) to `DECISIONS.md`.
+  - Documented Multi-Tenancy Architecture and data flow in `ARCHITECTURE.md`.
+
+---
+
 ## [Phase 3A] - 2026-11-16
 
 ### Added

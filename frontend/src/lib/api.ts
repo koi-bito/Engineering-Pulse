@@ -76,6 +76,31 @@ export interface SearchResponse {
   results: SearchHit[];
 }
 
+export interface Team {
+  id: string;
+  org_id: string;
+  name: string;
+  created_at: string;
+}
+
+let activeTeamId: string | null = null;
+
+export function setActiveTeamId(teamId: string | null): void {
+  activeTeamId = teamId;
+  if (teamId) {
+    localStorage.setItem("ep_active_team_id", teamId);
+  } else {
+    localStorage.removeItem("ep_active_team_id");
+  }
+}
+
+export function getActiveTeamId(): string | null {
+  if (activeTeamId === null && typeof window !== "undefined") {
+    activeTeamId = localStorage.getItem("ep_active_team_id");
+  }
+  return activeTeamId;
+}
+
 export function getApiBaseUrl(): string {
   return import.meta.env?.VITE_API_URL || "http://localhost:8000";
 }
@@ -111,6 +136,14 @@ export const api = axios.create({
   withCredentials: true,
 });
 
+api.interceptors.request.use((config) => {
+  const teamId = getActiveTeamId();
+  if (teamId) {
+    config.headers.set("X-Team-ID", teamId);
+  }
+  return config;
+});
+
 api.interceptors.response.use(
   (response) => response,
   (error: AxiosError<ApiErrorBody>) => {
@@ -118,6 +151,15 @@ api.interceptors.response.use(
     return Promise.reject(error);
   },
 );
+
+export async function fetchTeams(): Promise<Team[]> {
+  try {
+    const { data } = await api.get<Team[]>("/api/teams");
+    return data;
+  } catch {
+    return [];
+  }
+}
 
 export async function fetchMetricsSummary(): Promise<MetricsSummary> {
   const { data } = await api.get<MetricsSummary>("/api/metrics/summary");

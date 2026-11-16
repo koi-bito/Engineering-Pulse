@@ -421,4 +421,37 @@
 - Leaves the consumer group cleanly, allowing immediate partition reassignment without waiting for heartbeat timeouts.
 - Fits within Docker's default 10-second graceful stop window before SIGKILL.
 
+---
+
+## ADR-029 — Application-Level Tenant Scoping vs PostgreSQL Row-Level Security (RLS)
+
+**Date:** 2026-11-17
+**Status:** Accepted
+
+**Context:** Phase 3B introduces multi-team and multi-organization support across all event tables (`pull_requests`, `commits`, `jira_tickets`, `jira_transitions`). We evaluated PostgreSQL Row-Level Security (RLS) using session variables (`SET LOCAL app.current_tenant = ...`) versus application-level tenant scoping in repository queries with explicit context propagation via `request.state.team_id`.
+
+**Decision:** Adopt application-level tenant scoping enforced by query repository helpers (`$1::uuid IS NULL OR team_id = $1::uuid`), backed by composite indexes on `(team_id, ...)` and JWT middleware propagation (`request.state.team_id` / `X-Team-ID`), instead of PostgreSQL RLS.
+
+**Reasons:**
+- Asyncpg connection pooling: RLS session settings risk state pollution across reused pooled connections if a transaction block is improperly reset.
+- Predictable execution plans: Explicit SQL parameterized filters allow PostgreSQL planner to consistently leverage composite tenant indexes without dynamic session variable overhead.
+- Testability and decoupling: Unit and integration tests with mocked or light connections run without requiring active database sessions or superuser privileges to configure RLS bypass policies.
+
+---
+
+## ADR-030 — Webhook Secret Registry and Tenant Attribution
+
+**Date:** 2026-11-17
+**Status:** Accepted
+
+**Context:** In multi-tenant environments, incoming webhooks from GitHub and Jira must be securely attributed to the correct organization and team. GitHub and Jira webhooks do not inherently transmit custom multi-tenant headers by default.
+
+**Decision:** Implement a webhook secret registry (`webhook_registrations` table) allowing organizations to register per-team webhook secrets (`POST /api/orgs/{org_id}/webhooks/register`), while supporting explicit client headers (`X-Org-ID`, `X-Team-ID`) and query parameters for developer workflows and internal proxies.
+
+**Reasons:**
+- Security: Secrets are uniquely mapped to teams, allowing signature verification (`X-Hub-Signature-256` or `X-Jira-Webhook-Secret`) to simultaneously authenticate the payload and identify the target tenant.
+- Flexibility: Organizations can rotate individual team webhook tokens without affecting other teams or requiring global environment restarts.
+- Backwards compatibility: Single-tenant fallback to `GITHUB_WEBHOOK_SECRET` and `JIRA_WEBHOOK_SECRET` remains fully functional when no team secret matches.
+
+
 

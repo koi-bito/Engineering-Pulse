@@ -17,16 +17,29 @@ async def publish_live_event(
     event_type: str,
     summary: str,
     timestamp: datetime,
+    team_id: str | None = None,
+    org_id: str | None = None,
     data: dict[str, Any] | None = None,
 ) -> None:
     iso_timestamp = _to_utc_iso(timestamp)
-    payload_data = {"summary": summary, "timestamp": iso_timestamp, **(data or {})}
+    payload_data = {
+        "summary": summary,
+        "timestamp": iso_timestamp,
+        "team_id": team_id,
+        "org_id": org_id,
+        **(data or {}),
+    }
     message = {
         "type": "event",
         "source": source,
         "event_type": event_type,
         "summary": summary,
         "timestamp": iso_timestamp,
+        "team_id": team_id,
+        "org_id": org_id,
         "data": payload_data,
     }
-    await redis_client.publish(LIVE_FEED_CHANNEL, json.dumps(message))
+    msg_json = json.dumps(message)
+    await redis_client.publish(LIVE_FEED_CHANNEL, msg_json)
+    if team_id:
+        await redis_client.publish(f"{LIVE_FEED_CHANNEL}:{team_id}", msg_json)

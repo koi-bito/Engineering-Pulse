@@ -17,6 +17,8 @@ INDEX_MAPPING: dict[str, Any] = {
         "repo": {"type": "keyword"},
         "type": {"type": "keyword"},
         "source": {"type": "keyword"},
+        "org_id": {"type": "keyword"},
+        "team_id": {"type": "keyword"},
         "timestamp": {"type": "date"},
     }
 }

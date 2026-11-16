@@ -140,7 +140,7 @@ def test_seed_generate_events_validates_early_utc_day(monkeypatch: pytest.Monkey
     events = seed.generate_events(days=5, teams=2, repos=2, base_volume=10)
     assert len(events) > 0
 
-    for source, event_type, _, payload in events:
+    for source, event_type, _, payload, *_ in events:
         if source == "github" and event_type == "pull_request":
             pr = normalize_github_pr(payload)
             assert pr.opened_at <= fixed_now

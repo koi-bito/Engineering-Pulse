@@ -44,6 +44,37 @@
   gap: 12px;
 }
 
+.ep-team-switcher {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #1e293b;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid #334155;
+}
+
+.ep-team-label {
+  font-size: 12px;
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.ep-team-select {
+  background: transparent;
+  color: #f1f5f9;
+  border: none;
+  font-size: 12px;
+  font-weight: 500;
+  outline: none;
+  cursor: pointer;
+}
+
+.ep-team-select option {
+  background: #0f172a;
+  color: #f1f5f9;
+}
+
 .ep-dot {
   width: 10px;
   height: 10px;

@@ -165,4 +165,27 @@
 
 **Decisions logged in DECISIONS.md:** Yes — ADR-025 through ADR-028.
 
+---
+
+## 2026-11-17 · Phase 3B — Multi-Team & Multi-Org Support, Tenant Isolation & Switcher
+
+**Problem I was solving:** Supporting multi-organization and multi-team tenants with full data isolation across PostgreSQL, Redis, Elasticsearch, and live feeds; secret-based webhook tenant attribution; context switching via `X-Team-ID`; and a frontend team switcher.
+
+**What I asked AI:** Author migration `0003_multi_tenant_schema.py`, add tenant models and repositories, scope all metrics/sprint/search endpoints, add webhook registration and tenant resolution, update seed scripts, build frontend team switcher, and write zero-leakage integration tests.
+
+**What AI suggested & verified:**
+- Added Alembic migration `0003_multi_tenant_schema.py` creating `orgs`, `teams`, `team_members`, and `webhook_registrations` tables, plus adding `org_id` and `team_id` with composite indexes on event tables (`pull_requests`, `commits`, `jira_tickets`, `jira_transitions`). Verified bidirectional migration (`alembic downgrade -1` and `alembic upgrade head`).
+- Used application-level tenant scoping (`$1::uuid IS NULL OR team_id = $1::uuid`) instead of PostgreSQL RLS to prevent session variable pollution across `asyncpg` pooled connections.
+- Namespaced Redis cache keys with `{org_id}:{team_id}:metrics:*` and implemented tenant-scoped cache invalidation to prevent one team's activity from clearing another team's cache.
+- Mapped Elasticsearch keyword fields `org_id` and `team_id` to allow search query filtering via `{"term": {"team_id": "..."}}`.
+- Supported `X-Team-ID` request headers in `JWTAuthMiddleware` so authenticated users can dynamically switch team views without acquiring new JWTs.
+- Created `webhook_registrations` table mapping unique secrets to teams, allowing single ingestion endpoints to attribute events without custom webhook payload structures.
+- Added team switcher dropdown to React `Header.tsx` triggering `queryClient.invalidateQueries()` and injecting `X-Team-ID` via Axios request interceptor.
+- Authored `backend/tests/integration/test_multitenancy.py` proving zero cross-tenant leakage across queries, cache keys, and context switching.
+
+**What I learned:** In async connection pools (`asyncpg`), application-level tenant filtering backed by composite database indexes provides cleaner isolation, faster performance, and zero connection-leakage risks compared to database-level session RLS.
+
+**Decisions logged in DECISIONS.md:** Yes — ADR-029 and ADR-030.
+
+
 

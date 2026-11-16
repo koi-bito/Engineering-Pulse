@@ -9,6 +9,11 @@ from fastapi import APIRouter, HTTPException, Request, Response, status
 from slowapi.errors import RateLimitExceeded
 
 from app.config import Settings, get_settings
+from app.db.pool import acquire_connection
+from app.db.repositories import (
+    fetch_all_webhook_registrations,
+    lookup_webhook_registration,
+)
 from app.schemas.events import WebhookEnvelope
 from app.services.idempotency import clear_seen_event, is_duplicate_event
 from app.services.metrics import WEBHOOK_EVENTS_RECEIVED_TOTAL
@@ -100,6 +105,57 @@ def _parse_json_dict(raw_body: bytes) -> dict[str, Any]:
     return parsed
 
 
+async def _resolve_github_secret_and_tenant(
+    request: Request,
+    raw_body: bytes,
+    signature_header: str | None,
+) -> tuple[str, str | None, str | None]:
+    """Resolve secret, org_id, and team_id for incoming GitHub webhook."""
+    settings = _get_app_settings(request)
+    db_pool = getattr(request.app.state, "db_pool", None)
+    header_org = request.headers.get("X-Org-ID") or request.query_params.get("org_id")
+    header_team = request.headers.get("X-Team-ID") or request.query_params.get("team_id")
+
+    if db_pool and signature_header and signature_header.startswith("sha256="):
+        try:
+            async with acquire_connection(db_pool, "webhooks") as conn:
+                registrations = await fetch_all_webhook_registrations(conn, "github")
+                for reg in registrations:
+                    secret = reg["secret"]
+                    expected = (
+                        "sha256="
+                        + hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+                    )
+                    if hmac.compare_digest(expected, signature_header):
+                        return secret, str(reg["org_id"]), str(reg["team_id"])
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("github_webhook_reg_lookup_failed", error=str(exc))
+
+    return settings.GITHUB_WEBHOOK_SECRET, header_org, header_team
+
+
+async def _resolve_jira_secret_and_tenant(
+    request: Request,
+    token_header: str | None,
+) -> tuple[str, str | None, str | None]:
+    """Resolve secret, org_id, and team_id for incoming Jira webhook."""
+    settings = _get_app_settings(request)
+    db_pool = getattr(request.app.state, "db_pool", None)
+    header_org = request.headers.get("X-Org-ID") or request.query_params.get("org_id")
+    header_team = request.headers.get("X-Team-ID") or request.query_params.get("team_id")
+
+    if db_pool and token_header:
+        try:
+            async with acquire_connection(db_pool, "webhooks") as conn:
+                reg = await lookup_webhook_registration(conn, "jira", token_header)
+                if reg:
+                    return reg["secret"], str(reg["org_id"]), str(reg["team_id"])
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("jira_webhook_reg_lookup_failed", error=str(exc))
+
+    return settings.JIRA_WEBHOOK_SECRET, header_org, header_team
+
+
 async def _ingest_event(
     request: Request,
     source: Literal["github", "jira"],
@@ -107,6 +163,8 @@ async def _ingest_event(
     event_type: str,
     raw_body: bytes,
     payload: dict[str, Any],
+    org_id: str | None = None,
+    team_id: str | None = None,
 ) -> dict[str, Any]:
     received_at = datetime.now(UTC)
     redis_client = request.app.state.redis
@@ -126,6 +184,8 @@ async def _ingest_event(
         type=event_type,
         received_at=received_at,
         payload=payload,
+        org_id=org_id,
+        team_id=team_id,
     )
 
     try:
@@ -147,6 +207,8 @@ async def _ingest_event(
         event_id=event_id,
         source=source,
         type=event_type,
+        org_id=org_id,
+        team_id=team_id,
         s3_key=s3_key,
         topic=topic,
     )
@@ -157,17 +219,19 @@ async def _ingest_event(
 @webhook_limit_decorator()
 async def receive_github_webhook(request: Request, response: Response) -> dict[str, Any]:
     raw_body = await request.body()
-    settings = _get_app_settings(request)
+    secret, org_id, team_id = await _resolve_github_secret_and_tenant(
+        request, raw_body, request.headers.get("X-Hub-Signature-256")
+    )
     _verify_github_signature(
         raw_body,
         request.headers.get("X-Hub-Signature-256"),
-        settings.GITHUB_WEBHOOK_SECRET,
+        secret,
     )
     _enforce_rate_limit(
         request,
         receive_github_webhook,
         "github",
-        settings.GITHUB_WEBHOOK_SECRET,
+        secret,
     )
 
     payload = _parse_json_dict(raw_body)
@@ -177,23 +241,34 @@ async def receive_github_webhook(request: Request, response: Response) -> dict[s
         or hashlib.sha256(raw_body).hexdigest()
     )
     event_type = request.headers.get("X-GitHub-Event") or str(payload.get("type", "unknown"))
-    return await _ingest_event(request, "github", event_id, event_type, raw_body, payload)
+    return await _ingest_event(
+        request,
+        "github",
+        event_id,
+        event_type,
+        raw_body,
+        payload,
+        org_id=org_id,
+        team_id=team_id,
+    )
 
 
 @router.post("/jira", status_code=status.HTTP_202_ACCEPTED)
 @webhook_limit_decorator()
 async def receive_jira_webhook(request: Request, response: Response) -> dict[str, Any]:
     raw_body = await request.body()
-    settings = _get_app_settings(request)
+    secret, org_id, team_id = await _resolve_jira_secret_and_tenant(
+        request, request.headers.get("X-Jira-Webhook-Secret")
+    )
     _verify_jira_token(
         request.headers.get("X-Jira-Webhook-Secret"),
-        settings.JIRA_WEBHOOK_SECRET,
+        secret,
     )
     _enforce_rate_limit(
         request,
         receive_jira_webhook,
         "jira",
-        settings.JIRA_WEBHOOK_SECRET,
+        secret,
     )
 
     payload = _parse_json_dict(raw_body)
@@ -203,5 +278,14 @@ async def receive_jira_webhook(request: Request, response: Response) -> dict[str
         or hashlib.sha256(raw_body).hexdigest()
     )
     event_type = str(payload.get("webhookEvent") or payload.get("type") or "jira_event")
-    return await _ingest_event(request, "jira", event_id, event_type, raw_body, payload)
+    return await _ingest_event(
+        request,
+        "jira",
+        event_id,
+        event_type,
+        raw_body,
+        payload,
+        org_id=org_id,
+        team_id=team_id,
+    )
 

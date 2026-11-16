@@ -34,7 +34,9 @@ async def process_github_message(
     envelope = WebhookEnvelope.model_validate(json.loads(raw_value.decode("utf-8")))
 
     if envelope.type == "pull_request":
-        pr = normalize_github_pr(envelope.payload)
+        pr = normalize_github_pr(
+            envelope.payload, org_id=envelope.org_id, team_id=envelope.team_id
+        )
         async with acquire_connection(db_pool, service_name) as conn, conn.transaction():
             await upsert_pull_request(conn, pr)
 
@@ -46,22 +48,30 @@ async def process_github_message(
                 "repo": pr.repo,
                 "type": "pull_request",
                 "source": "github",
+                "org_id": envelope.org_id,
+                "team_id": envelope.team_id,
                 "timestamp": pr.opened_at.isoformat().replace("+00:00", "Z"),
             },
         )
-        await invalidate_metrics_cache(redis_client)
+        await invalidate_metrics_cache(
+            redis_client, org_id=envelope.org_id, team_id=envelope.team_id
+        )
         await publish_live_event(
             redis_client,
             source="github",
             event_type="pull_request",
             summary=f"[{pr.repo}] PR {pr.state}: {pr.title}",
             timestamp=pr.merged_at or pr.opened_at,
+            org_id=envelope.org_id,
+            team_id=envelope.team_id,
         )
         logger.info("github_pr_processed", event_id=envelope.event_id, pr_id=str(pr.id))
         return
 
     if envelope.type == "push":
-        commits = normalize_github_commits(envelope.payload)
+        commits = normalize_github_commits(
+            envelope.payload, org_id=envelope.org_id, team_id=envelope.team_id
+        )
         async with acquire_connection(db_pool, service_name) as conn, conn.transaction():
             for commit in commits:
                 await upsert_commit(conn, commit)
@@ -75,6 +85,8 @@ async def process_github_message(
                     "repo": commit.repo,
                     "type": "commit",
                     "source": "github",
+                    "org_id": envelope.org_id,
+                    "team_id": envelope.team_id,
                     "timestamp": commit.timestamp.isoformat().replace("+00:00", "Z"),
                 },
             )
@@ -84,7 +96,12 @@ async def process_github_message(
                 event_type="commit",
                 summary=f"[{commit.repo}] {commit.author}: {commit.message[:80]}",
                 timestamp=commit.timestamp,
+                org_id=envelope.org_id,
+                team_id=envelope.team_id,
             )
+        await invalidate_metrics_cache(
+            redis_client, org_id=envelope.org_id, team_id=envelope.team_id
+        )
         logger.info(
             "github_push_processed", event_id=envelope.event_id, commit_count=len(commits)
         )

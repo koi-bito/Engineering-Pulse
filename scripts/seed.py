@@ -78,6 +78,69 @@ def _parse_volume(value: str) -> int:
     return parsed
 
 
+DEMO_TEAMS = [
+    {
+        "org_id": "11111111-1111-4000-8000-000000000001",
+        "org_name": "Acme Corp",
+        "team_id": "11111111-1111-4000-8000-000000000011",
+        "team_name": "Platform",
+        "project": "PLAT",
+        "repos": ["acme/platform-svc", "acme/auth-svc"],
+    },
+    {
+        "org_id": "11111111-1111-4000-8000-000000000001",
+        "org_name": "Acme Corp",
+        "team_id": "11111111-1111-4000-8000-000000000012",
+        "team_name": "Mobile",
+        "project": "MOB",
+        "repos": ["acme/ios-app", "acme/android-app"],
+    },
+    {
+        "org_id": "22222222-2222-4000-8000-000000000002",
+        "org_name": "Globex Corp",
+        "team_id": "22222222-2222-4000-8000-000000000021",
+        "team_name": "Core",
+        "project": "CORE",
+        "repos": ["globex/core-api", "globex/billing"],
+    },
+    {
+        "org_id": "22222222-2222-4000-8000-000000000002",
+        "org_name": "Globex Corp",
+        "team_id": "22222222-2222-4000-8000-000000000022",
+        "team_name": "Cloud",
+        "project": "CLOUD",
+        "repos": ["globex/cloud-infra", "globex/k8s-mesh"],
+    },
+]
+
+
+async def ensure_demo_teams_in_db(db_url: str | None = None) -> None:
+    if not db_url:
+        return
+    try:
+        import asyncpg
+
+        clean_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
+        conn = await asyncpg.connect(clean_url)
+        try:
+            for t in DEMO_TEAMS:
+                await conn.execute(
+                    "INSERT INTO orgs (id, name) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name",
+                    uuid.UUID(t["org_id"]),
+                    t["org_name"],
+                )
+                await conn.execute(
+                    "INSERT INTO teams (id, org_id, name) VALUES ($1, $2, $3) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name",
+                    uuid.UUID(t["team_id"]),
+                    uuid.UUID(t["org_id"]),
+                    t["team_name"],
+                )
+        finally:
+            await conn.close()
+    except Exception:  # noqa: BLE001, S110
+        pass
+
+
 def generate_events(
     *,
     days: int,
@@ -85,12 +148,25 @@ def generate_events(
     repos: int,
     base_volume: int,
     seed: int = 42,
-) -> list[tuple[str, str, str, dict]]:
+    org_id: str | None = None,
+    team_id: str | None = None,
+) -> list[tuple[str, str, str, dict, str | None, str | None]]:
     rng = random.Random(seed)
     now = datetime.now(UTC)
-    repo_names = [f"acme/service-{i + 1}" for i in range(repos)]
-    projects = [f"TEAM{t + 1}" for t in range(teams)]
-    events: list[tuple[str, str, str, dict]] = []
+
+    if org_id and team_id:
+        active_teams = [
+            {
+                "org_id": org_id,
+                "team_id": team_id,
+                "project": "PROJ",
+                "repos": [f"org/service-{i + 1}" for i in range(repos)],
+            }
+        ]
+    else:
+        active_teams = DEMO_TEAMS
+
+    events: list[tuple[str, str, str, dict, str | None, str | None]] = []
     pr_seq = 1000
     ticket_seq = 100
 
@@ -99,6 +175,7 @@ def generate_events(
         count = max(1, round(base_volume * _day_multiplier(days - day_offset, day_dt, rng)))
 
         for _ in range(count):
+            team_ctx = rng.choice(active_teams)
             event_time = day_dt.replace(
                 hour=rng.randint(8, 19),
                 minute=rng.randint(0, 59),
@@ -109,7 +186,7 @@ def generate_events(
                 # Avoid future "today" timestamps that would invert merged/resolved clamping.
                 event_time -= timedelta(days=1)
             author = rng.choice(AUTHORS)
-            repo = rng.choice(repo_names)
+            repo = rng.choice(team_ctx["repos"])
             roll = rng.random()
 
             if roll < 0.40:
@@ -133,7 +210,9 @@ def generate_events(
                         "merged_at": _iso_z(merged_at) if merged_at else None,
                     },
                 }
-                events.append(("github", "pull_request", str(uuid.uuid4()), payload))
+                events.append(
+                    ("github", "pull_request", str(uuid.uuid4()), payload, team_ctx["org_id"], team_ctx["team_id"])
+                )
             elif roll < 0.72:
                 sha = uuid.uuid4().hex
                 payload = {
@@ -148,10 +227,12 @@ def generate_events(
                         }
                     ],
                 }
-                events.append(("github", "push", str(uuid.uuid4()), payload))
+                events.append(
+                    ("github", "push", str(uuid.uuid4()), payload, team_ctx["org_id"], team_ctx["team_id"])
+                )
             else:
                 ticket_seq += 1
-                project = rng.choice(projects)
+                project = team_ctx["project"]
                 resolved = rng.random() < 0.72
                 resolved_at = (
                     min(now, event_time + timedelta(hours=rng.uniform(4.0, 96.0)))
@@ -186,21 +267,23 @@ def generate_events(
                         ]
                     },
                 }
-                events.append(("jira", payload["webhookEvent"], event_id, payload))
+                events.append(
+                    ("jira", payload["webhookEvent"], event_id, payload, team_ctx["org_id"], team_ctx["team_id"])
+                )
 
     return events
 
 
 async def post_events(
     *,
-    events: list[tuple[str, str, str, dict]],
+    events: list[tuple[str, str, str, dict, str | None, str | None]],
     api_url: str,
     github_secret: str,
     jira_secret: str,
 ) -> dict[str, int]:
     sent = {"github": 0, "jira": 0}
     async with httpx.AsyncClient(base_url=api_url, timeout=15.0) as client:
-        for source, event_type, event_id, payload in events:
+        for source, event_type, event_id, payload, org_id, team_id in events:
             raw_body = json.dumps(payload).encode("utf-8")
             if source == "github":
                 path = "/webhooks/github"
@@ -217,6 +300,11 @@ async def post_events(
                     "X-Jira-Webhook-Secret": jira_secret,
                     "X-Jira-Delivery": event_id,
                 }
+
+            if org_id:
+                headers["X-Org-ID"] = str(org_id)
+            if team_id:
+                headers["X-Team-ID"] = str(team_id)
 
             while True:
                 resp = await client.post(path, content=raw_body, headers=headers)
@@ -267,6 +355,13 @@ def parse_args() -> argparse.Namespace:
         help="Jira webhook secret (defaults to JIRA_WEBHOOK_SECRET env var)",
     )
     parser.add_argument("--seed", type=int, default=42, help="PRNG seed for reproducibility")
+    parser.add_argument("--org", type=str, default=None, help="Target Organization UUID")
+    parser.add_argument("--team", type=str, default=None, help="Target Team UUID")
+    parser.add_argument(
+        "--db-url",
+        default=os.getenv("DATABASE_URL"),
+        help="Postgres DATABASE_URL to auto-provision demo teams if empty",
+    )
     args = parser.parse_args()
     if args.days < 1 or args.teams < 1 or args.repos < 1:
         parser.error("--days, --teams, and --repos must be >= 1")
@@ -277,12 +372,15 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    asyncio.run(ensure_demo_teams_in_db(args.db_url))
     events = generate_events(
         days=args.days,
         teams=args.teams,
         repos=args.repos,
         base_volume=args.volume,
         seed=args.seed,
+        org_id=args.org,
+        team_id=args.team,
     )
     counts = asyncio.run(
         post_events(
@@ -292,9 +390,10 @@ def main() -> None:
             jira_secret=args.jira_secret,
         )
     )
+    tenant_info = f"for org={args.org} team={args.team}" if args.org and args.team else "across 2 orgs / 4 teams"
     print(
         f"Seeded {counts['github']} GitHub + {counts['jira']} Jira events "
-        f"across {args.days} day(s) via {args.api_url}"
+        f"across {args.days} day(s) {tenant_info} via {args.api_url}"
     )
 
 

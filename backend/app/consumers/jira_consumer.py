@@ -36,9 +36,14 @@ async def process_jira_message(
         logger.info("jira_event_skipped", event_id=envelope.event_id, event_type=envelope.type)
         return
 
-    ticket = normalize_jira_ticket(envelope.payload)
+    ticket = normalize_jira_ticket(
+        envelope.payload, org_id=envelope.org_id, team_id=envelope.team_id
+    )
     transitions = normalize_jira_transitions(
-        envelope.payload, fallback_timestamp=envelope.received_at
+        envelope.payload,
+        fallback_timestamp=envelope.received_at,
+        org_id=envelope.org_id,
+        team_id=envelope.team_id,
     )
 
     async with acquire_connection(db_pool, service_name) as conn, conn.transaction():
@@ -54,16 +59,25 @@ async def process_jira_message(
             "repo": ticket.project,
             "type": "ticket",
             "source": "jira",
+            "org_id": envelope.org_id,
+            "team_id": envelope.team_id,
             "timestamp": ticket.created_at.isoformat().replace("+00:00", "Z"),
         },
     )
-    await invalidate_metrics_cache(redis_client, project_key=ticket.project)
+    await invalidate_metrics_cache(
+        redis_client,
+        project_key=ticket.project,
+        org_id=envelope.org_id,
+        team_id=envelope.team_id,
+    )
     await publish_live_event(
         redis_client,
         source="jira",
         event_type="ticket",
         summary=f"[{ticket.id}] {ticket.status}: {ticket.summary}",
         timestamp=ticket.resolved_at or ticket.created_at,
+        org_id=envelope.org_id,
+        team_id=envelope.team_id,
     )
     logger.info(
         "jira_ticket_processed",

@@ -30,6 +30,7 @@ from app.routers.auth import (
     router as auth_router,
 )
 from app.routers.metrics import router as metrics_router
+from app.routers.tenants import router as tenants_router
 from app.routers.webhooks import router as webhooks_router
 from app.routers.ws import router as ws_router
 from app.services.kafka_producer import KafkaEventProducer
@@ -219,13 +220,14 @@ def create_app(
         allow_origins=cfg.cors_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type"],
+        allow_headers=["Authorization", "Content-Type", "X-Team-ID"],
     )
     app.add_middleware(JWTAuthMiddleware)
 
     app.include_router(auth_router)
     app.include_router(webhooks_router)
     app.include_router(metrics_router)
+    app.include_router(tenants_router)
     app.include_router(ws_router)
     app.include_router(admin_router)
 

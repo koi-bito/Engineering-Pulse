@@ -1,12 +1,12 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Header } from "./components/Header.tsx";
 import { OverviewPanel } from "./components/OverviewPanel.tsx";
 import { SearchPanel } from "./components/SearchPanel.tsx";
 import { Sidebar, type Section } from "./components/Sidebar.tsx";
 import { SprintBoard } from "./components/SprintBoard.tsx";
 import { useWebSocket } from "./hooks/useWebSocket.ts";
-import { api } from "./lib/api.ts";
+import { api, fetchTeams, getActiveTeamId, setActiveTeamId } from "./lib/api.ts";
 import "./App.css";
 
 interface HealthResponse {
@@ -23,6 +23,8 @@ const SECTION_TITLES: Record<Section, string> = {
 
 export function App() {
   const [section, setSection] = useState<Section>("overview");
+  const queryClient = useQueryClient();
+  const [activeTeam, setActiveTeam] = useState<string | null>(() => getActiveTeamId());
   const { status: wsStatus, events } = useWebSocket();
 
   const healthQuery = useQuery({
@@ -35,6 +37,20 @@ export function App() {
     retry: false,
   });
 
+  const teamsQuery = useQuery({
+    queryKey: ["teams"],
+    queryFn: fetchTeams,
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+
+  const handleSelectTeam = (teamId: string) => {
+    const next = teamId || null;
+    setActiveTeam(next);
+    setActiveTeamId(next);
+    queryClient.invalidateQueries();
+  };
+
   const apiHealthy = healthQuery.isPending
     ? null
     : healthQuery.isSuccess && healthQuery.data.status === "ok";
@@ -45,6 +61,9 @@ export function App() {
         apiHealthy={apiHealthy}
         environment={healthQuery.data?.environment}
         wsStatus={wsStatus}
+        teams={teamsQuery.data ?? []}
+        activeTeamId={activeTeam}
+        onSelectTeam={handleSelectTeam}
       />
       <div className="ep-body">
         <Sidebar active={section} onSelect={setSection} />

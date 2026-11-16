@@ -18,6 +18,8 @@ class WebhookEnvelope(BaseModel):
     type: str
     received_at: datetime
     payload: dict[str, Any]
+    org_id: str | None = None
+    team_id: str | None = None
 
     @field_validator("received_at")
     @classmethod
@@ -34,6 +36,8 @@ class PullRequestEvent(BaseModel):
     opened_at: datetime
     merged_at: datetime | None = None
     cycle_time_hours: float | None = None
+    org_id: str | None = None
+    team_id: str | None = None
 
     @field_validator("opened_at", "merged_at")
     @classmethod
@@ -58,6 +62,8 @@ class CommitEvent(BaseModel):
     message: str
     sha: str = Field(min_length=1)
     timestamp: datetime
+    org_id: str | None = None
+    team_id: str | None = None
 
     @field_validator("timestamp")
     @classmethod
@@ -74,6 +80,8 @@ class JiraTicketEvent(BaseModel):
     created_at: datetime
     resolved_at: datetime | None = None
     cycle_time_hours: float | None = None
+    org_id: str | None = None
+    team_id: str | None = None
 
     @field_validator("created_at", "resolved_at")
     @classmethod
@@ -96,6 +104,8 @@ class JiraTransitionEvent(BaseModel):
     from_status: str = Field(min_length=1)
     to_status: str = Field(min_length=1)
     transitioned_at: datetime
+    org_id: str | None = None
+    team_id: str | None = None
 
     @field_validator("transitioned_at")
     @classmethod
@@ -191,7 +201,11 @@ class _JiraWebhookPayload(BaseModel):
     changelog: _JiraChangelog | None = None
 
 
-def normalize_github_pr(payload: dict[str, Any]) -> PullRequestEvent:
+def normalize_github_pr(
+    payload: dict[str, Any],
+    org_id: str | None = None,
+    team_id: str | None = None,
+) -> PullRequestEvent:
     """Validate and convert a raw GitHub pull_request webhook payload."""
     parsed = _GitHubPRWebhookPayload.model_validate(payload)
     pr = parsed.pull_request
@@ -203,10 +217,16 @@ def normalize_github_pr(payload: dict[str, Any]) -> PullRequestEvent:
         state=pr.state,
         opened_at=pr.created_at,
         merged_at=pr.merged_at,
+        org_id=org_id,
+        team_id=team_id,
     )
 
 
-def normalize_github_commits(payload: dict[str, Any]) -> list[CommitEvent]:
+def normalize_github_commits(
+    payload: dict[str, Any],
+    org_id: str | None = None,
+    team_id: str | None = None,
+) -> list[CommitEvent]:
     """Validate and convert a raw GitHub push webhook payload into CommitEvents."""
     parsed = _GitHubPushWebhookPayload.model_validate(payload)
     return [
@@ -217,12 +237,18 @@ def normalize_github_commits(payload: dict[str, Any]) -> list[CommitEvent]:
             message=commit.message,
             sha=commit.id,
             timestamp=commit.timestamp,
+            org_id=org_id,
+            team_id=team_id,
         )
         for commit in parsed.commits
     ]
 
 
-def normalize_jira_ticket(payload: dict[str, Any]) -> JiraTicketEvent:
+def normalize_jira_ticket(
+    payload: dict[str, Any],
+    org_id: str | None = None,
+    team_id: str | None = None,
+) -> JiraTicketEvent:
     """Validate and convert a raw Jira issue webhook payload into JiraTicketEvent."""
     parsed = _JiraWebhookPayload.model_validate(payload)
     fields = parsed.issue.fields
@@ -234,12 +260,16 @@ def normalize_jira_ticket(payload: dict[str, Any]) -> JiraTicketEvent:
         status=fields.status.name,
         created_at=fields.created,
         resolved_at=fields.resolutiondate,
+        org_id=org_id,
+        team_id=team_id,
     )
 
 
 def normalize_jira_transitions(
     payload: dict[str, Any],
     fallback_timestamp: datetime | None = None,
+    org_id: str | None = None,
+    team_id: str | None = None,
 ) -> list[JiraTransitionEvent]:
     """Extract status transition events from a Jira webhook changelog, normalized to UTC."""
     parsed = _JiraWebhookPayload.model_validate(payload)
@@ -265,6 +295,8 @@ def normalize_jira_transitions(
                     from_status=item.fromString,
                     to_status=item.toString,
                     transitioned_at=transitioned_at,
+                    org_id=org_id,
+                    team_id=team_id,
                 )
             )
     return transitions

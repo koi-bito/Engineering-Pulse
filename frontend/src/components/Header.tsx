@@ -1,12 +1,23 @@
 import type { WebSocketStatus } from "../hooks/useWebSocket.ts";
+import type { Team } from "../lib/api.ts";
 
 interface HeaderProps {
   apiHealthy: boolean | null;
   environment?: string;
   wsStatus: WebSocketStatus;
+  teams?: Team[];
+  activeTeamId?: string | null;
+  onSelectTeam?: (teamId: string) => void;
 }
 
-export function Header({ apiHealthy, environment, wsStatus }: HeaderProps) {
+export function Header({
+  apiHealthy,
+  environment,
+  wsStatus,
+  teams = [],
+  activeTeamId,
+  onSelectTeam,
+}: HeaderProps) {
   const statusLabel =
     apiHealthy === null
       ? "API: checking"
@@ -21,6 +32,26 @@ export function Header({ apiHealthy, environment, wsStatus }: HeaderProps) {
         <h1>Engineering Pulse</h1>
       </div>
       <div className="ep-header-meta">
+        {teams.length > 0 && onSelectTeam && (
+          <div className="ep-team-switcher">
+            <label htmlFor="team-select" className="ep-team-label">
+              Team:
+            </label>
+            <select
+              id="team-select"
+              className="ep-team-select"
+              value={activeTeamId || ""}
+              onChange={(e) => onSelectTeam(e.target.value)}
+            >
+              <option value="">All Teams</option>
+              {teams.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <span className="ep-pill" data-state={wsStatus}>
           Live Feed: {wsStatus}
         </span>

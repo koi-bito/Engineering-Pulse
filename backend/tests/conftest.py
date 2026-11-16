@@ -133,6 +133,18 @@ class FakeQueryConn:
         self.queries.append((query, args))
         return self.fetch_handler(query, *args) if self.fetch_handler else []
 
+    async def execute(self, query: str, *args: Any) -> str:
+        if self.fail_next is not None:
+            exc = self.fail_next
+            self.fail_next = None
+            raise exc
+        self.queries.append((query, args))
+        return "EXECUTE 1"
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[None]:
+        yield
+
 
 class FakeQueryPool:
     def __init__(self) -> None:

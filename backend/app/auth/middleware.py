@@ -37,4 +37,9 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                 # Malformed/expired token - log debug; protected dependencies will reject with 401
                 logger.debug("jwt_middleware_token_decode_failed", error=str(exc))
 
+        # Allow switching team context via X-Team-ID header when authenticated
+        header_team = request.headers.get("X-Team-ID")
+        if header_team and request.state.org_id:
+            request.state.team_id = header_team.strip()
+
         return await call_next(request)

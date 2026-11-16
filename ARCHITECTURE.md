@@ -37,6 +37,46 @@ flowchart LR
    - Raw JSON body is written asynchronously via `asyncio.to_thread(put_object)` to `raw/{source}/{YYYY}/{MM}/{DD}/{event_id}.json` in `engineering-pulse-raw-events` (LocalStack when `ENVIRONMENT=local`).
    - Canonical `WebhookEnvelope` JSON (`event_id`, `source`, `type`, `received_at`, `payload`) is then published via `AIOKafkaProducer.send_and_wait` to `github-events` or `jira-events` (`acks="all"`, `request_timeout_ms=30000`, `retry_backoff_ms=500`).
 
+## Multi-Tenancy & Data Isolation (Phase 3B)
+
+```mermaid
+flowchart TD
+  subgraph Ingress["Tenant Attribution & Ingress"]
+    WH["Webhook (GitHub / Jira)"] --> Res["Secret Registry / Header Resolver"]
+    Res --> Env["WebhookEnvelope (org_id, team_id)"]
+    Env --> Kafka["Kafka Topics"]
+  end
+
+  subgraph Processing["Isolated Processing"]
+    Kafka --> Cons["Consumers (GitHub, Jira)"]
+    Cons --> PG[("PostgreSQL\nteam_id, org_id\nIndexed")]
+    Cons --> ES[("Elasticsearch\nkeyword: team_id, org_id")]
+    Cons --> Red[("Redis Cache & Pub/Sub\n{org_id}:{team_id}:*")]
+  end
+
+  subgraph Query["Tenant Scoped Reads"]
+    User["Authenticated Client (JWT)"] --> MW["JWTAuthMiddleware\nrequest.state.team_id\n(X-Team-ID switch)"]
+    MW --> API["FastAPI Endpoints"]
+    API -->|"team_id filter"| PG
+    API -->|"team_id term filter"| ES
+    API -->|"namespaced key"| Red
+  end
+```
+
+1. **Tenant Context Propagation:**
+   - Every user belongs to an organization (`org_id`) and an initial default team (`team_id`).
+   - `JWTAuthMiddleware` decodes user claims from the Authorization token into `request.state.org_id` and `request.state.team_id`.
+   - Users can seamlessly switch active team context within their organization by supplying the `X-Team-ID` request header, without requiring token re-issuance.
+2. **Webhook Attribution & Registry (`webhook_registrations` table):**
+   - Organizations register per-team webhook secrets via `POST /api/orgs/{org_id}/webhooks/register`.
+   - Incoming webhooks resolve the matching secret in the registry to attribute the event to the correct `org_id` and `team_id`.
+   - Optional developer/proxy headers (`X-Org-ID`, `X-Team-ID`) and query parameters are supported.
+3. **Data Layer Tenant Isolation:**
+   - **PostgreSQL:** Event tables (`pull_requests`, `commits`, `jira_tickets`, `jira_transitions`) carry indexed `org_id` and `team_id` columns. All repository query helpers strictly filter by `team_id`, guaranteeing zero cross-tenant data leakage.
+   - **Redis Cache:** Cache keys are prefixed with `{org_id}:{team_id}:metrics:*`, ensuring complete tenant partition in Redis. Invalidation triggered by one team never purges another team's cached metrics.
+   - **Elasticsearch:** All indexed documents contain `org_id` and `team_id` keywords. Search queries apply a `{"term": {"team_id": "..."}}` filter to prevent cross-tenant discovery.
+   - **Live WebSocket Feed:** Events fan out to team-specific Pub/Sub channels (`live-feed:{team_id}`) alongside the global feed.
+
 ## Consumer & Storage Layer
 
 1. **Independent Consumer Services (`backend/app/consumers/`):**

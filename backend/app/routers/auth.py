@@ -20,6 +20,8 @@ from app.auth.manager import UserManager, get_user_manager
 from app.auth.roles import require_role
 from app.auth.schemas import RegisterRequest, TokenResponse, UserCreate, UserRead
 from app.config import get_settings
+from app.db.pool import acquire_connection
+from app.db.repositories import add_team_member, create_org, create_team
 from app.models.user import User
 
 logger = structlog.get_logger(__name__)
@@ -213,6 +215,19 @@ async def register(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="REGISTER_USER_ALREADY_EXISTS",
         )
+
+    db_pool = getattr(request.app.state, "db_pool", None)
+    if db_pool is not None:
+        async with acquire_connection(db_pool, "auth") as conn:
+            if hasattr(conn, "transaction"):
+                async with conn.transaction():
+                    await create_org(conn, body.org_name, org_id)
+                    await create_team(conn, org_id, body.team_name, team_id)
+                    await add_team_member(conn, team_id, created_user.id, "admin")
+            else:
+                await create_org(conn, body.org_name, org_id)
+                await create_team(conn, org_id, body.team_name, team_id)
+                await add_team_member(conn, team_id, created_user.id, "admin")
     logger.info(
         "org_and_admin_created",
         org_name=body.org_name,

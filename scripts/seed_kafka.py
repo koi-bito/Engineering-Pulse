@@ -29,7 +29,13 @@ ALLOWED_TYPES_BY_TOPIC = {
 }
 
 
-def build_sample_envelope(event_type: str, index: int, now: datetime) -> WebhookEnvelope:
+def build_sample_envelope(
+    event_type: str,
+    index: int,
+    now: datetime,
+    org_id: str | None = None,
+    team_id: str | None = None,
+) -> WebhookEnvelope:
     event_id = str(uuid.uuid4())
     if event_type == "pr":
         opened_at = now - timedelta(hours=6 + index)
@@ -53,6 +59,8 @@ def build_sample_envelope(event_type: str, index: int, now: datetime) -> Webhook
             source="github",
             type="pull_request",
             received_at=now,
+            org_id=org_id,
+            team_id=team_id,
             payload=payload,
         )
 
@@ -75,6 +83,8 @@ def build_sample_envelope(event_type: str, index: int, now: datetime) -> Webhook
             source="github",
             type="push",
             received_at=now,
+            org_id=org_id,
+            team_id=team_id,
             payload=payload,
         )
 
@@ -102,17 +112,28 @@ def build_sample_envelope(event_type: str, index: int, now: datetime) -> Webhook
         source="jira",
         type="jira:issue_updated" if resolved_at else "jira:issue_created",
         received_at=now,
+        org_id=org_id,
+        team_id=team_id,
         payload=payload,
     )
 
 
-async def seed_topic(bootstrap_servers: str, topic: str, event_type: str, count: int) -> None:
+async def seed_topic(
+    bootstrap_servers: str,
+    topic: str,
+    event_type: str,
+    count: int,
+    org_id: str | None = None,
+    team_id: str | None = None,
+) -> None:
     producer = AIOKafkaProducer(bootstrap_servers=bootstrap_servers)
     await producer.start()
     try:
         now = datetime.now(UTC)
         for idx in range(count):
-            envelope = build_sample_envelope(event_type, idx, now)
+            envelope = build_sample_envelope(
+                event_type, idx, now, org_id=org_id, team_id=team_id
+            )
             encoded = json.dumps(envelope.model_dump(mode="json")).encode("utf-8")
             await producer.send_and_wait(
                 topic,
@@ -155,6 +176,8 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_BOOTSTRAP,
         help=f"Kafka bootstrap servers (default: {DEFAULT_BOOTSTRAP})",
     )
+    parser.add_argument("--org", type=str, default=None, help="Organization UUID or ID")
+    parser.add_argument("--team", type=str, default=None, help="Team UUID or ID")
     args = parser.parse_args()
     if args.count < 1:
         parser.error("--count must be >= 1")
@@ -166,7 +189,16 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    asyncio.run(seed_topic(args.bootstrap_servers, args.topic, args.event_type, args.count))
+    asyncio.run(
+        seed_topic(
+            args.bootstrap_servers,
+            args.topic,
+            args.event_type,
+            args.count,
+            org_id=args.org,
+            team_id=args.team,
+        )
+    )
 
 
 if __name__ == "__main__":
