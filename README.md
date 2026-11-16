@@ -1,6 +1,6 @@
 # Engineering Pulse
 
-[![CI](https://github.com/placeholder-org/engineering-pulse/actions/workflows/ci.yml/badge.svg)](https://github.com/placeholder-org/engineering-pulse/actions/workflows/ci.yml)
+[![CI](https://github.com/koi-bito/Engineering-Pulse/actions/workflows/ci.yml/badge.svg)](https://github.com/koi-bito/Engineering-Pulse/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python: 3.12](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/)
 [![React: 18](https://img.shields.io/badge/React-18-cyan.svg)](https://react.dev/)
@@ -80,7 +80,7 @@ flowchart TD
 ### 2. Launch Local Infrastructure
 ```bash
 # Clone the repository
-git clone https://github.com/placeholder-org/engineering-pulse.git
+git clone https://github.com/koi-bito/Engineering-Pulse.git
 cd engineering-pulse
 
 # Copy default environment variables
