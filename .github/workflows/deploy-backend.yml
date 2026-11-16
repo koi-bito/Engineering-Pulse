@@ -1,0 +1,76 @@
+name: Deploy Backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "docker-compose.prod.yml"
+      - "scripts/**"
+      - "infra/prometheus/**"
+      - "infra/grafana/**"
+      - ".github/workflows/deploy-backend.yml"
+
+jobs:
+  deploy:
+    name: SSH Deploy to EC2
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Deploy on EC2 with Automatic Rollback
+        env:
+          EC2_USER: ${{ secrets.EC2_USER || 'ec2-user' }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          ssh "$EC2_USER@$EC2_HOST" "bash -s" << 'EOF'
+            set -euo pipefail
+            cd /opt/engineering-pulse
+
+            # 1. Save current commit for rollback
+            git rev-parse HEAD > /tmp/last-good-sha
+            echo "Current healthy commit: $(cat /tmp/last-good-sha)"
+
+            # 2. Pull latest code
+            git pull origin main
+
+            # 3. Run database migrations before building/starting new containers
+            docker compose -f docker-compose.prod.yml run --rm api python -m alembic upgrade head
+
+            # 4. Gracefully drain existing WebSocket connections
+            curl -fs -X POST http://localhost:8000/admin/drain-ws || echo "Drain skipped or server not running"
+            sleep 2
+
+            # 5. Build and restart production containers
+            docker compose -f docker-compose.prod.yml up -d --build
+
+            # 6. Verify health within 30 seconds
+            echo "Verifying application health..."
+            HEALTHY=false
+            for i in {1..6}; do
+              if curl -fs http://localhost:8000/health | grep -q '"status":"ok"'; then
+                HEALTHY=true
+                echo "Health check passed!"
+                break
+              fi
+              echo "Waiting for health check ($i/6)..."
+              sleep 5
+            done
+
+            if [ "$HEALTHY" = false ]; then
+              echo "Health check FAILED! Auto-rolling back to $(cat /tmp/last-good-sha)..."
+              PREV_SHA=$(cat /tmp/last-good-sha)
+              git checkout "$PREV_SHA"
+              docker compose -f docker-compose.prod.yml up -d --build
+              exit 1
+            fi
+          EOF
+

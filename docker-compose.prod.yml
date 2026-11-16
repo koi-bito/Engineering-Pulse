@@ -70,13 +70,20 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus:/etc/prometheus:ro
       - prometheus_data:/prometheus
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:9090/-/healthy"]
       interval: 10s
       timeout: 5s
       retries: 10
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.0
+    container_name: ep-node-exporter
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9100:9100"
 
   grafana:
     image: grafana/grafana:10.4.2
@@ -91,6 +98,8 @@ services:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set}
     volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana_data:/var/lib/grafana
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/api/health"]

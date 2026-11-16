@@ -109,3 +109,40 @@
 **What I learned:** Using AWS-managed RDS Secrets Manager rotation (`manage_master_user_password = true`) + URL-encoding the retrieved password in bootstrap scripts eliminates plaintext DB credentials from both Terraform state and EC2 templates while preventing special-character DSN parse errors.
 
 **Decisions logged in DECISIONS.md:** Yes — ADR-018 through ADR-022.
+
+---
+
+## 2026-11-13 · Phase 2.1 — Observability: Prometheus Exporters, Alerting Rules & Grafana Dashboards
+
+**Problem I was solving:** Establishing end-to-end observability across the streaming pipeline and API, provisioning Prometheus scrapers (FastAPI, Node Exporter, Kafka JMX), creating alerting rules for high consumer lag and HTTP 5xx error spikes, and configuring automated Grafana dashboard provisioning without manual UI clicks.
+
+**What I asked AI:** Design Prometheus alerting rules matching the architecture specifications and generate clean Grafana v10 dashboard JSON definitions that auto-provision on startup.
+
+**What AI suggested & verified:**
+- Configured `infra/prometheus/alert.rules.yml` with `KafkaConsumerLagHigh` (`kafka_consumer_lag > 1000` for 5m) and `HighHttpErrorRate` (`5xx > 5%` for 2m across 2-minute rolling rate).
+- Created Grafana provisioning YAMLs (`infra/grafana/provisioning/datasources/prometheus.yml` and `infra/grafana/provisioning/dashboards/dashboards.yml`) to automatically mount and wire Prometheus datasource and dashboards on container start.
+- Created `infra/grafana/dashboards/business-dashboard.json` (PR throughput, Jira tickets, deduplications, and Kafka lag per partition) and `infra/grafana/dashboards/infra-dashboard.json` (API req/s, P99 latency percentiles, 5xx error %, Postgres pool saturation, and Redis cache hit ratio).
+- Added `node-exporter` container to Compose configurations for host resource monitoring.
+
+**What I learned:** Mounting code-defined Grafana provisioning files (`/etc/grafana/provisioning/`) guarantees environment parity and version control for dashboards, eliminating manual Grafana UI configuration across local, staging, and production.
+
+**Decisions logged in DECISIONS.md:** Yes — ADR-023.
+
+---
+
+## 2026-11-13 · Phase 2.2 & 2.3 — CI/CD, Zero-Downtime Rollbacks & Production Documentation
+
+**Problem I was solving:** Building automated GitHub Actions workflows (CI, backend deploy, frontend deploy), preventing WebSocket connection dropouts during deployments, implementing automatic deploy rollbacks, and completing full production documentation.
+
+**What I asked AI:** Implement `.github/workflows/ci.yml`, `deploy-backend.yml`, and `deploy-frontend.yml` with rollback logic, a WebSocket draining endpoint, and comprehensive docs (`TESTING.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `README.md`, `ARCHITECTURE.md`).
+
+**What AI suggested & verified:**
+- Added `POST /admin/drain-ws` and `scripts/pre-stop.sh` to iterate active WebSockets on `app.state.ws_connections` and send close frame code `4000` ("server restarting") before container teardown, triggering the client's reconnect backoff without UI freezes.
+- Configured `deploy-backend.yml` to save current SHA (`git rev-parse HEAD > /tmp/last-good-sha`), run `alembic upgrade head` before container rebuilds, and auto-rollback to the saved SHA if `/health` does not pass within 30 seconds.
+- Verified that all database migrations in `backend/alembic/versions/` implement a complete `downgrade()` function to support clean rollbacks.
+- Authored `TESTING.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, and finalized `README.md` and `ARCHITECTURE.md` (data flow narrative, technology justifications, 10x scale plan, and known trade-offs).
+
+**What I learned:** In WebSocket architectures, gracefully closing connections with application-specific close codes prior to container restarts turns abrupt connection drops into managed client-side reconnects.
+
+**Decisions logged in DECISIONS.md:** Yes — ADR-024.
+

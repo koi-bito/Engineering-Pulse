@@ -68,3 +68,35 @@ async def test_publish_live_event_includes_protocol_data_field() -> None:
     assert payload["type"] == "event"
     assert payload["data"]["summary"] == "[ENG-1] Done: Fix lag"
     assert payload["data"]["timestamp"] == "2026-11-11T10:00:00Z"
+
+
+async def test_drain_ws_endpoint_closes_active_connections() -> None:
+    cfg = Settings(
+        ENVIRONMENT="local",
+        ES_ENABLED=False,
+        GITHUB_WEBHOOK_SECRET="s",
+        JIRA_WEBHOOK_SECRET="s",
+    )
+    app = create_app(settings=cfg, rate_limit_storage_uri="memory://")
+    app.state.db_pool = FakeQueryPool()
+    app.state.redis = FakeAsyncRedis()
+    app.state.s3_archive = FakeS3Archive()
+    app.state.kafka_producer = FakeKafkaProducer()
+
+    closed_calls: list[tuple[int, str]] = []
+
+    class FakeWS:
+        async def close(self, code: int = 1000, reason: str = "") -> None:
+            closed_calls.append((code, reason))
+
+    fake_socket = FakeWS()
+    app.state.ws_connections = {fake_socket}
+
+    from httpx import ASGITransport, AsyncClient
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.post("/admin/drain-ws")
+        assert res.status_code == 200
+        assert res.json() == {"status": "drained", "closed_connections": 1}
+        assert closed_calls == [(4000, "server restarting")]

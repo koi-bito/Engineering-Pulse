@@ -71,3 +71,48 @@ flowchart LR
 - **Database & Secrets (`infra/modules/rds`):** Private RDS PostgreSQL 16 (`db.t3.micro`, 7-day backups, encryption at rest) using AWS-managed Secrets Manager (`manage_master_user_password = true`) plus an app secret fetched at bootstrap via a least-privilege IAM instance profile (IMDSv2, zero static AWS keys).
 - **Frontend & Ingestion Edge (`infra/modules/alb`, `infra/modules/s3`, `infra/modules/cloudfront`):** ALB health-checking `GET /health` forwards API/WebSocket traffic (`120s` idle timeout) to EC2:8000; static Vite assets sit in a private versioned S3 bucket served over HTTPS via CloudFront Origin Access Control (OAC), alongside a dedicated private S3 bucket for raw webhook archives (`30d` → `STANDARD_IA`, `365d` expiration).
 
+## Technology Choices & Rationales
+
+- **FastAPI (Python 3.12):** Provides high-performance async concurrency required to ingest webhook bursts and stream WebSocket feeds without blocking the event loop. Pydantic v2 validates heterogeneous payloads at runtime with compiled C-speed parsing, and OpenAPI documentation is generated automatically.
+- **Apache Kafka 7.6 (KRaft):** Serves as the distributed commit log buffering high-velocity external webhooks. KRaft eliminates the operational overhead of ZooKeeper, while partition-based consumer groups allow independent, crash-isolated services to consume events at their own pace without dropping messages.
+- **PostgreSQL 16 (`asyncpg`):** Acts as the immutable relational source of truth for normalized developer entities (PRs, commits, tickets, transitions, and failed DLQ events). PostgreSQL offers strict ACID guarantees, JSONB semi-structured storage, and robust upsert semantics (`ON CONFLICT`) essential for idempotency.
+- **Redis 7:** Delivers microsecond-latency caching for aggregated metrics to keep read endpoints responsive under heavy traffic, while Redis Pub/Sub provides a lightweight, zero-polling broadcast channel powering client WebSocket connections.
+- **Elasticsearch 8.13:** Provides dedicated full-text search, fuzzy matching, and multi-field boosting (e.g., scoring PR titles higher than commit messages) across developer entities that would be expensive and slow to query via relational pattern matching.
+- **Prometheus & Grafana:** Prometheus's pull model decouples metrics collection from application code, automatically flagging uncontactable instances (`up == 0`). Grafana visualizes real-time throughput, cycle time trends, and infrastructure vitals through code-provisioned dashboards.
+- **React 18 + Vite + Recharts:** A modern, type-safe single-page frontend leveraging TanStack React Query for declarative server state management, Recharts for hardware-accelerated SVG visualizations, and Vite for instant build times and content-hashed asset production.
+- **Terraform (AWS):** Implements infrastructure as code with modular, repeatable blueprints for VPC, RDS, EC2, S3, ALB, and CloudFront. Remote state locking in DynamoDB and S3 prevents concurrent modifications, and IAM instance profiles eliminate static AWS keys.
+
+## Architecture at 10x Scale
+
+If ingestion volume and query traffic increased by an order of magnitude (e.g., 50M+ events/day and thousands of concurrent users):
+
+1. **Compute Layer (ECS / EKS Auto-Scaling):**
+   - Replace the single EC2 instance with an ECS Fargate or EKS cluster spanning multiple Availability Zones.
+   - Separate ingestion API pods from consumer worker pods so webhook ingress auto-scales independently based on request volume, while consumers scale based on partition lag.
+2. **Managed Kafka (Amazon MSK):**
+   - Migrate Kafka to Amazon MSK with Multi-AZ broker replication, automated storage auto-expansion, and dedicated JMX monitoring.
+   - Increase topic partition count from 3 to 12+ partitions per topic to enable greater consumer parallelism.
+3. **Database Sharding & Read Replicas:**
+   - Enable RDS Multi-AZ for high availability with automated failover.
+   - Deploy read replicas for heavy analytical queries (`/api/metrics/cycle-time`, `/api/metrics/prs`), routing all write traffic from consumers to the primary instance.
+4. **Distributed Caching (AWS ElastiCache Redis Cluster):**
+   - Upgrade single-node Redis to an ElastiCache Redis replication group with cluster mode enabled, multi-AZ failover, and in-transit encryption.
+5. **Stream Processing (Apache Flink / Spark Streaming):**
+   - For real-time windowed calculations (e.g., rolling 30-day percentile cycle times across millions of pull requests), introduce stream processing engines to continuously update metric materialized views instead of relying on periodic on-demand SQL aggregation.
+
+## Known Architectural Trade-offs
+
+- **Single EC2 Instance vs Multi-Host Orchestration:**
+  - *Trade-off:* All app containers, Kafka, and Redis run on a single `t3.large`. This introduces a single point of failure (SPOF) if the EC2 host fails.
+  - *Rationale:* Keeps operational costs and infrastructure complexity manageable for initial deployment. The migration path to ECS/EKS and managed services is documented and requires zero changes to application code.
+- **KRaft Kafka on EC2 vs Amazon MSK:**
+  - *Trade-off:* Running Kafka on EC2 requires managing broker disk space and JVM memory, whereas MSK is fully managed.
+  - *Rationale:* Amazon MSK has a high minimum monthly cost (~$150/mo minimum for a 2-broker cluster). Running KRaft Kafka in a container saves significant cost while providing the exact same Kafka client protocol.
+- **Eventual Consistency between PostgreSQL and Elasticsearch:**
+  - *Trade-off:* Consumers commit to PostgreSQL first, then index to Elasticsearch. A brief window exists where an entity exists in PostgreSQL but has not yet appeared in Elasticsearch search results.
+  - *Rationale:* PostgreSQL remains the authoritative source of truth. If Elasticsearch indexing fails, the entity is safely persisted, and the pipeline can re-index asynchronously without data loss.
+- **Ephemeral Redis Cache:**
+  - *Trade-off:* Redis cache keys are treated as ephemeral; a Redis restart empties the cache.
+  - *Rationale:* All metrics are read-through and self-healing. When a key is missing, the API computes the value from PostgreSQL and re-populates Redis on the fly (`get_or_compute_cached`).
+
+

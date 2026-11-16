@@ -122,3 +122,58 @@ aws rds delete-db-instance \
   --skip-final-snapshot
 ```
 
+## 6. Rollback Procedures
+
+### 6.1 Backend Code Rollback
+If a newly deployed commit fails health checks or exhibits regressions:
+
+```bash
+# Connect to EC2 (via SSM or SSH)
+cd /opt/engineering-pulse
+PREV_SHA=$(cat /tmp/last-good-sha 2>/dev/null || echo "<PREV_COMMIT_SHA>")
+
+# Drain active WebSockets before switching versions
+curl -fs -X POST http://localhost:8000/admin/drain-ws || true
+sleep 2
+
+# Check out previous known-good commit and rebuild
+git checkout "$PREV_SHA"
+docker compose -f docker-compose.prod.yml up -d --build
+curl -fsS http://localhost:8000/health
+```
+
+### 6.2 Database Migration Rollback
+If the deploy ran a schema migration that needs to be reversed:
+
+```bash
+# 1. Revert schema one step via Alembic
+docker compose -f docker-compose.prod.yml run --rm api python -m alembic downgrade -1
+
+# 2. Check out the corresponding prior application code
+git checkout <PREV_COMMIT_SHA>
+
+# 3. Rebuild and restart containers with prior schema expectation
+docker compose -f docker-compose.prod.yml up -d --build
+```
+> **Rule:** Every migration in `backend/alembic/versions/` must have an explicit, tested `downgrade()` implementation. Empty downgrades are rejected at review.
+
+### 6.3 Frontend Rollback
+Because S3 versioning is enabled on the frontend bucket:
+
+```bash
+# Re-sync prior build or restore versioned index
+aws s3 cp "s3://$FRONTEND_BUCKET/prev-build/" "s3://$FRONTEND_BUCKET/" --recursive
+aws cloudfront create-invalidation --distribution-id "$CF_DIST_ID" --paths "/index.html"
+```
+
+## 7. Observability & Alerting Operations
+
+- **Grafana:** accessible at `http://<EC2_IP>:3000` (or `http://localhost:3000` in local dev). Dashboards are auto-provisioned:
+  - *Engineering Pulse — Business Dashboard*: Ingestion rates, PR throughput, Jira tickets, deduplications, and Kafka consumer lag.
+  - *Engineering Pulse — Infrastructure Dashboard*: Request rates, P99 latency, 5xx error %, Postgres connection pool saturation, and Redis cache hit ratio.
+- **Prometheus:** accessible at `http://<EC2_IP>:9090` (or `http://localhost:9090` in local dev).
+  - Alert rules are defined in `infra/prometheus/alert.rules.yml`:
+    - `KafkaConsumerLagHigh`: fires when `kafka_consumer_lag > 1000` for 5 minutes.
+    - `HighHttpErrorRate`: fires when 5xx errors exceed 5% of traffic for 2 minutes.
+
+

@@ -20,6 +20,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import Settings, get_settings
 from app.db.pool import create_pg_pool
+from app.routers.admin import router as admin_router
 from app.routers.metrics import router as metrics_router
 from app.routers.webhooks import router as webhooks_router
 from app.routers.ws import router as ws_router
@@ -212,6 +213,7 @@ def create_app(
     app.include_router(webhooks_router)
     app.include_router(metrics_router)
     app.include_router(ws_router)
+    app.include_router(admin_router)
 
     @app.get("/health")
     async def health() -> dict[str, str]:

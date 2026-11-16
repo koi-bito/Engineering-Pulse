@@ -324,3 +324,36 @@
 
 **Production upgrade path:**
 - Move API and consumers to ECS/EKS across 2+ AZs, Kafka to Amazon MSK, Redis to Multi-AZ ElastiCache, and enable RDS Multi-AZ.
+
+---
+
+## ADR-023 — Prometheus pull model over push model for observability
+
+**Date:** 2026-11-13
+**Status:** Accepted
+
+**Context:** Observability requires gathering metrics across the FastAPI ingestion/query service, Node Exporter host vitals, and Kafka lag. We needed to choose between a pull-based collector (Prometheus scraping `/metrics`) or a push-based agent (sending metrics to an external aggregator or StatsD).
+
+**Decision:** Use Prometheus's native pull model scraping targets every 15s.
+
+**Reasons:**
+- Decouples services from monitoring infrastructure: application containers do not need to know where Prometheus lives or handle network retries/failures if the monitoring sink is slow or down.
+- Health detection is implicit: if a scrape fails or times out, Prometheus immediately knows the target is down (`up == 0`).
+- Consistent scraping frequency across heterogeneous targets (FastAPI, Node Exporter, Kafka).
+
+---
+
+## ADR-024 — Direct SSH deploy with automatic rollback over ECR + ECS
+
+**Date:** 2026-11-13
+**Status:** Accepted
+
+**Context:** Deploying the containerized application stack to EC2 could be done via full container image registries (AWS ECR) and orchestration (ECS Fargate/EC2) or direct git pull + Docker Compose build over SSH.
+
+**Decision:** Implement GitHub Actions deploying directly to EC2 over SSH with pre-pull SHA capture, pre-stop WebSocket connection draining, DB migration execution, and automatic rollback on health-check failure.
+
+**Reasons:**
+- Eliminates ECR image storage/transfer costs and multi-service orchestration overhead on a single host.
+- Capturing `/tmp/last-good-sha` prior to `git pull` enables instant, zero-tool rollback if post-deploy `/health` does not return `200` within 30 seconds.
+- Running `alembic upgrade head` before starting new containers guarantees the database schema is compatible before incoming requests hit the updated code.
+

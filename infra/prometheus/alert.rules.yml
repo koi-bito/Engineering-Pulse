@@ -1,0 +1,23 @@
+groups:
+  - name: engineering_pulse_alerts
+    rules:
+      - alert: KafkaConsumerLagHigh
+        expr: kafka_consumer_lag > 1000
+        for: 5m
+        labels:
+          severity: warning
+          tier: data-pipeline
+        annotations:
+          summary: "Kafka consumer lag is high on topic {{ $labels.topic }}"
+          description: "Kafka consumer lag for group '{{ $labels.group }}' on topic '{{ $labels.topic }}' partition {{ $labels.partition }} has exceeded 1000 messages for 5 minutes (current value: {{ $value }})."
+
+      - alert: HighHttpErrorRate
+        expr: (sum(rate(http_requests_total{status=~"5.."}[2m])) / sum(rate(http_requests_total[2m]))) * 100 > 5
+        for: 2m
+        labels:
+          severity: critical
+          tier: api
+        annotations:
+          summary: "High HTTP 5xx error rate detected on API"
+          description: "HTTP 5xx error rate has exceeded 5% across all endpoints for more than 2 minutes (current value: {{ $value | printf \"%.2f\" }}%)."
+
