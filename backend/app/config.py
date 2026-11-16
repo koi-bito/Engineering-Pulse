@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     JIRA_WEBHOOK_SECRET: str = ""
     WEBHOOK_RATE_LIMIT: str = "100/minute"
 
+    # Authentication & JWT configuration (Phase 3A)
+    JWT_SECRET: str = "engineering-pulse-super-secret-jwt-key-minimum-32-bytes!"
+    JWT_LIFETIME_SECONDS: int = 900  # 15 minutes
+    REFRESH_TOKEN_LIFETIME_SECONDS: int = 604800  # 7 days
+    AUTH_LOGIN_RATE_LIMIT: str = "10/minute"
+    AUTH_REFRESH_RATE_LIMIT: str = "30/minute"
+    AUTH_REGISTER_RATE_LIMIT: str = "5/minute"
+
     model_config = SettingsConfigDict(
         env_file=(".env", "../.env"),
         env_file_encoding="utf-8",

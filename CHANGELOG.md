@@ -5,6 +5,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [Phase 3A] - 2026-11-16
+
+### Added
+- **Authentication & User Management:**
+  - Integrated `fastapi-users[sqlalchemy]` with custom user model (`id`, `email`, `hashed_password`, `org_id`, `team_id`, `role`).
+  - Added Alembic migration `0002_create_users_table.py` with complete `upgrade()` and `downgrade()` definitions.
+  - Implemented `/auth/jwt/login` issuing 15-minute JWT access tokens and 7-day `httpOnly`, `SameSite=Lax` refresh cookies (`ep_refresh_token`).
+  - Implemented `/auth/jwt/refresh` rotating the refresh cookie and issuing fresh access tokens.
+  - Implemented `/auth/jwt/logout` clearing the refresh cookie.
+  - Implemented `/api/auth/register` transactionally creating organizations, teams, and initial admin users.
+- **Security & Rate Limiting:**
+  - IP-based `slowapi` rate limiting on auth endpoints: `/auth/jwt/login` (10/min), `/auth/jwt/refresh` (30/min), and `/api/auth/register` (5/min).
+  - Role-based access control dependency (`require_role`) enforcing permission levels.
+  - Protected all `/api/metrics/...`, `/api/sprint/...`, and `/api/search` endpoints requiring active authenticated users (returning 401 without valid token).
+- **WebSocket First-Message Authentication:**
+  - Enforced that `/ws/feed` requires an `{ "type": "auth", "token": "<access_token>" }` message within 5 seconds before subscribing to Redis channels.
+  - Connections with invalid or missing tokens are closed immediately with code `4401`.
+- **Graceful Consumer Teardown:**
+  - Updated `BaseKafkaConsumer.stop()` to commit all pending partition offsets before stopping, preventing partition rebalances and duplicate message delivery.
+- **Documentation & Decisions:**
+  - Documented `ADR-025` through `ADR-028` in `DECISIONS.md`.
+  - Added Phase 3A entry in `AI_BUILD_LOG.md`.
+
+---
+
 ## [Phase 2] - 2026-11-13
 
 ### Added

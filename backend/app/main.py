@@ -18,9 +18,17 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from slowapi.errors import RateLimitExceeded
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.auth.middleware import JWTAuthMiddleware
 from app.config import Settings, get_settings
 from app.db.pool import create_pg_pool
 from app.routers.admin import router as admin_router
+from app.routers.auth import (
+    auth_limiter,
+    configure_auth_limiter,
+)
+from app.routers.auth import (
+    router as auth_router,
+)
 from app.routers.metrics import router as metrics_router
 from app.routers.webhooks import router as webhooks_router
 from app.routers.ws import router as ws_router
@@ -89,7 +97,9 @@ def _register_exception_handlers(app: FastAPI) -> None:
     async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
         extra_headers: dict[str, str] = {}
         retry_after: int | None = None
-        limiter = getattr(request.app.state, "limiter", None)
+        limiter = getattr(request.app.state, "auth_limiter", None) or getattr(
+            request.app.state, "limiter", None
+        )
         view_rate_limit = getattr(request.state, "view_rate_limit", None)
         if limiter is not None and view_rate_limit is not None:
             header_probe = limiter._inject_headers(Response(), view_rate_limit)
@@ -141,6 +151,7 @@ def create_app(
         storage_uri=rate_limit_storage_uri or cfg.REDIS_URL,
         rate_limit=cfg.WEBHOOK_RATE_LIMIT,
     )
+    configure_auth_limiter(rate_limit_storage_uri or cfg.REDIS_URL)
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -198,6 +209,7 @@ def create_app(
     app = FastAPI(title="Engineering Pulse API", version="0.1.0", lifespan=lifespan)
     app.state.settings = cfg
     app.state.limiter = webhook_limiter
+    app.state.auth_limiter = auth_limiter
     app.state.ws_connections = set()
 
     _register_exception_handlers(app)
@@ -209,7 +221,9 @@ def create_app(
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
     )
+    app.add_middleware(JWTAuthMiddleware)
 
+    app.include_router(auth_router)
     app.include_router(webhooks_router)
     app.include_router(metrics_router)
     app.include_router(ws_router)

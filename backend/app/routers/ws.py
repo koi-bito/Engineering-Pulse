@@ -6,6 +6,7 @@ from typing import Any
 import structlog
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from app.auth.backend import decode_auth_token
 from app.services.pubsub import LIVE_FEED_CHANNEL
 
 logger = structlog.get_logger(__name__)
@@ -53,14 +54,40 @@ async def _receive_client_messages(websocket: WebSocket) -> None:
             payload = json.loads(raw)
         except json.JSONDecodeError:
             continue
-        if isinstance(payload, dict) and payload.get("type") == "auth":
-            # Phase 3A will enforce JWT validation on the initial auth message.
-            continue
+        if isinstance(payload, dict) and payload.get("type") == "ping":
+            await websocket.send_json({"type": "pong"})
 
 
 @router.websocket("/ws/feed")
 async def websocket_feed(websocket: WebSocket) -> None:
     await websocket.accept()
+
+    # Phase 3A: Require first message to be { "type": "auth", "token": "<access_token>" }
+    try:
+        raw_first = await asyncio.wait_for(websocket.receive_text(), timeout=5.0)
+        auth_payload = json.loads(raw_first)
+        if (
+            not isinstance(auth_payload, dict)
+            or auth_payload.get("type") != "auth"
+            or not auth_payload.get("token")
+        ):
+            logger.warning("ws_auth_rejected", reason="invalid_auth_payload")
+            await websocket.close(code=4401, reason="Unauthorized: Expected auth frame")
+            return
+
+        token = str(auth_payload["token"])
+        claims = decode_auth_token(token)
+    except (TimeoutError, Exception) as exc:  # noqa: BLE001
+        logger.warning("ws_auth_failed", error=str(exc))
+        with contextlib.suppress(Exception):
+            await websocket.close(code=4401, reason="Unauthorized")
+        return
+
+    # User authenticated
+    websocket.state.user_id = claims.get("sub")
+    websocket.state.team_id = claims.get("team_id")
+    websocket.state.role = claims.get("role")
+
     connections: set[WebSocket] | None = getattr(websocket.app.state, "ws_connections", None)
     if connections is not None:
         connections.add(websocket)
@@ -68,7 +95,11 @@ async def websocket_feed(websocket: WebSocket) -> None:
     redis_client = websocket.app.state.redis
     pubsub = redis_client.pubsub()
     await pubsub.subscribe(LIVE_FEED_CHANNEL)
-    logger.info("ws_client_connected", channel=LIVE_FEED_CHANNEL)
+    logger.info(
+        "ws_client_connected",
+        channel=LIVE_FEED_CHANNEL,
+        user_id=claims.get("sub"),
+    )
 
     receiver = asyncio.create_task(_receive_client_messages(websocket))
     forwarder = asyncio.create_task(_forward_pubsub(websocket, pubsub))
@@ -95,4 +126,3 @@ async def websocket_feed(websocket: WebSocket) -> None:
         with contextlib.suppress(Exception):
             await pubsub.aclose()
         logger.info("ws_client_disconnected", channel=LIVE_FEED_CHANNEL)
-

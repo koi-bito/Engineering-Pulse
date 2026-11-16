@@ -357,3 +357,68 @@
 - Capturing `/tmp/last-good-sha` prior to `git pull` enables instant, zero-tool rollback if post-deploy `/health` does not return `200` within 30 seconds.
 - Running `alembic upgrade head` before starting new containers guarantees the database schema is compatible before incoming requests hit the updated code.
 
+---
+
+## ADR-025 — Use `fastapi-users` over hand-rolled authentication
+
+**Date:** 2026-11-16
+**Status:** Accepted
+
+**Context:** The API layer needed user identity, registration, password hashing, and token lifecycle management. Hand-rolling token generation, password salt/hash rotation, and cookie transport risks subtle security vulnerabilities (timing attacks, insecure hashing, improper cookie flags) and adds significant maintenance overhead.
+
+**Decision:** Adopt `fastapi-users[sqlalchemy]` with custom extensions for `org_id`, `team_id`, and `role`.
+
+**Reasons:**
+- Battle-tested security primitives (Argon2id/bcrypt via `pwdlib`, secure password verification, standard token models).
+- Clean hooks for custom user attributes (`org_id`, `team_id`, `role`) and transactional registration wrapping org and team creation.
+- Saves 1–2 weeks of low-level boilerplate, allowing focus on multi-tenancy and data pipeline guarantees.
+
+---
+
+## ADR-026 — Short-lived in-memory access token + httpOnly refresh cookie over localStorage
+
+**Date:** 2026-11-16
+**Status:** Accepted
+
+**Context:** SPA applications must store credentials to authenticate requests without exposing tokens to Cross-Site Scripting (XSS) attacks. Storing long-lived JWTs in browser `localStorage` or `sessionStorage` allows any injected script to exfiltrate tokens.
+
+**Decision:** Use short-lived (15-minute) JWT access tokens kept strictly in application memory, paired with a long-lived (7-day) `httpOnly`, `SameSite=Lax` refresh cookie (`ep_refresh_token`).
+
+**Reasons:**
+- `httpOnly` cookies are inaccessible to JavaScript via `document.cookie`, completely mitigating token theft from XSS attacks.
+- Short 15-minute lifetime limits the blast radius if an access token is intercepted in flight.
+- Silent refresh on 401 via `/auth/jwt/refresh` ensures seamless user experience without forced re-logins.
+
+---
+
+## ADR-027 — WebSocket authentication via first-message token over query parameter or cookie
+
+**Date:** 2026-11-16
+**Status:** Accepted
+
+**Context:** Browser WebSocket API (`new WebSocket(url)`) does not support custom HTTP headers (e.g., `Authorization: Bearer <token>`). We evaluated passing tokens via URL query parameters (`/ws/feed?token=...`), relying on cookies, or exchanging an authentication frame as the first message.
+
+**Decision:** Require client to connect and immediately send an authentication frame `{ "type": "auth", "token": "<access_token>" }` within 5 seconds before subscribing to any backend Pub/Sub channels. Unauthenticated or invalid connections are closed with code `4401`.
+
+**Reasons:**
+- Query parameters are logged in server access logs, proxy logs, and browser history, exposing bearer credentials.
+- Cookie-based authentication for WebSockets introduces Cross-Site WebSocket Hijacking (CSWSH) risks.
+- The first-message pattern keeps tokens out of URLs, prevents unauthorized Redis subscriptions, and provides explicit error close codes (`4401`).
+
+---
+
+## ADR-028 — Graceful consumer shutdown and offset commit pattern for aiokafka
+
+**Date:** 2026-11-16
+**Status:** Accepted
+
+**Context:** Abrupt container termination (`SIGKILL` or unhandled `SIGTERM`) leaves Kafka consumer groups in an unclean state, triggering long rebalance timeouts (30+ seconds) on container restarts and risking duplicate message processing.
+
+**Decision:** Implement signal handlers (`SIGTERM`, `SIGINT`) in `BaseKafkaConsumer` that set a stop event, commit all pending in-memory partition offsets, and cleanly call `await consumer.stop()`.
+
+**Reasons:**
+- Guarantees zero uncommitted processed messages before exit.
+- Leaves the consumer group cleanly, allowing immediate partition reassignment without waiting for heartbeat timeouts.
+- Fits within Docker's default 10-second graceful stop window before SIGKILL.
+
+

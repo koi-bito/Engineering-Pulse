@@ -1,10 +1,13 @@
 import json
+import uuid
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 
+from app.auth.backend import generate_access_token
 from app.config import Settings
 from app.main import create_app
+from app.models.user import User
 from app.services.pubsub import LIVE_FEED_CHANNEL, publish_live_event
 from tests.conftest import FakeAsyncRedis, FakeKafkaProducer, FakeQueryPool, FakeS3Archive
 
@@ -24,8 +27,19 @@ def test_ws_feed_streams_redis_pubsub_and_cleans_up_on_disconnect() -> None:
     app.state.kafka_producer = FakeKafkaProducer()
     app.state.es_client = None
 
+    user = User(
+        id=uuid.uuid4(),
+        email="test@pulse.io",
+        hashed_password="pw",
+        is_active=True,
+        is_superuser=False,
+        is_verified=True,
+        role="member",
+    )
+    token = generate_access_token(user)
+
     with TestClient(app) as client, client.websocket_connect("/ws/feed") as ws:
-        ws.send_json({"type": "auth", "token": "phase-1-placeholder"})
+        ws.send_json({"type": "auth", "token": token})
         assert len(fake_redis.subscribers[LIVE_FEED_CHANNEL]) == 1
 
         fake_redis.publish_sync(

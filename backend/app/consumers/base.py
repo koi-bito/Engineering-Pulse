@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import signal
 from collections.abc import Awaitable, Callable
@@ -84,8 +85,17 @@ class BaseKafkaConsumer:
             self._consumer.subscribe(self.topics, listener=self._listener)
 
     async def stop(self) -> None:
+        self.request_stop()
         try:
+            if self._listener.pending_commits:
+                with contextlib.suppress(Exception):
+                    await self._consumer.commit(self._listener.pending_commits)
+                    logger.debug(
+                        "final_offsets_committed_on_stop",
+                        pending=len(self._listener.pending_commits),
+                    )
             await self._consumer.stop()
+            logger.info("consumer_stopped_cleanly", topics=self.topics)
         finally:
             if self._dlq_producer is not None:
                 await self._dlq_producer.stop()

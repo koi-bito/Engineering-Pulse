@@ -2,8 +2,9 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from elasticsearch import NotFoundError
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
+from app.auth.backend import current_active_user
 from app.config import Settings, get_settings
 from app.db.pool import acquire_connection
 from app.db.repositories import (
@@ -29,7 +30,11 @@ from app.services.cache import (
 )
 from app.services.es_index import ES_ALIAS
 
-router = APIRouter(prefix="/api", tags=["metrics"])
+router = APIRouter(
+    prefix="/api",
+    tags=["metrics"],
+    dependencies=[Depends(current_active_user)],
+)
 
 _RANGE_DAYS = {"7d": 7, "14d": 14, "30d": 30, "90d": 90}
 

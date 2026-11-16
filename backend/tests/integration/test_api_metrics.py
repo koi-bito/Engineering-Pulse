@@ -1,4 +1,5 @@
 import json
+import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
@@ -7,8 +8,10 @@ import pytest
 from elasticsearch import NotFoundError
 from httpx import ASGITransport, AsyncClient
 
+from app.auth.backend import current_active_user
 from app.config import Settings
 from app.main import create_app
+from app.models.user import User
 from app.services.cache import (
     AVG_CYCLE_TIME_7D_KEY,
     METRICS_SUMMARY_KEY,
@@ -60,6 +63,17 @@ async def api_client(
     app.state.s3_archive = fake_s3
     app.state.kafka_producer = fake_kafka
     app.state.es_client = fake_es_client
+
+    mock_user = User(
+        id=uuid.uuid4(),
+        email="dev@pulse.io",
+        hashed_password="hashed",
+        is_active=True,
+        is_superuser=False,
+        is_verified=True,
+        role="member",
+    )
+    app.dependency_overrides[current_active_user] = lambda: mock_user
 
     async with AsyncClient(
         transport=ASGITransport(app=app, raise_app_exceptions=False),
@@ -225,6 +239,16 @@ async def test_search_falls_back_to_postgres_when_es_disabled(
     app.state.s3_archive = fake_s3
     app.state.kafka_producer = fake_kafka
     app.state.es_client = None
+
+    app.dependency_overrides[current_active_user] = lambda: User(
+        id=uuid.uuid4(),
+        email="dev@pulse.io",
+        hashed_password="pw",
+        is_active=True,
+        is_superuser=False,
+        is_verified=True,
+        role="member",
+    )
 
     fake_db_pool.conn.fetch_handler = lambda _q, *_a: [
         {

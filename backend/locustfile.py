@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from locust import HttpUser, between, task
 
 GITHUB_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "local-github-secret")
+AUTH_TOKEN = os.getenv("AUTH_BEARER_TOKEN", "")
 
 
 def _sign_github(raw_body: bytes) -> str:
@@ -19,6 +20,10 @@ def _sign_github(raw_body: bytes) -> str:
 
 class EngineeringPulseUser(HttpUser):
     wait_time = between(0.5, 2.0)
+
+    def on_start(self) -> None:
+        if AUTH_TOKEN:
+            self.client.headers["Authorization"] = f"Bearer {AUTH_TOKEN}"
 
     @task(4)
     def get_summary_metrics(self) -> None:

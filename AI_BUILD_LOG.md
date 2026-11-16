@@ -146,3 +146,23 @@
 
 **Decisions logged in DECISIONS.md:** Yes — ADR-024.
 
+---
+
+## 2026-11-16 · Phase 3A — Authentication & Authorization, JWT Lifecycle & WS Auth
+
+**Problem I was solving:** Securing the API and WebSocket layer with user authentication, JWT access/refresh token lifecycle, rate limiting against brute-force attacks, role-based authorization, and clean consumer shutdown without dropping messages.
+
+**What I asked AI:** Integrate `fastapi-users` with custom claims (`org_id`, `team_id`, `role`), configure custom middleware injecting `team_id` into request state, protect `/api/metrics/...` endpoints, build WebSocket first-message authentication with close code `4401`, and implement graceful consumer offset commit on SIGTERM.
+
+**What AI suggested & verified:**
+- Implemented `CustomJWTStrategy` adding claims (`sub`, `aud`, `email`, `role`, `team_id`, `org_id`) to the 15-minute access token, alongside 7-day `httpOnly`, `SameSite=Lax` refresh cookie (`ep_refresh_token`) rotated on `/auth/jwt/refresh`.
+- Added `JWTAuthMiddleware` extracting claims from `Authorization: Bearer <token>` into `request.state` so all downstream query endpoints read `team_id` from state rather than query parameters.
+- Applied IP-keyed `slowapi` rate limiting across `/auth/jwt/login` (10/min), `/auth/jwt/refresh` (30/min), and `/api/auth/register` (5/min).
+- Enforced WebSocket authentication: `/ws/feed` requires `{ "type": "auth", "token": "<access_token>" }` as the first message within 5 seconds before subscribing to Redis Pub/Sub, closing unauthenticated connections with code `4401`.
+- Updated `BaseKafkaConsumer.stop()` to commit all pending partition offsets before stopping, preventing consumer rebalance lag and duplicate processing on container restarts.
+
+**What I learned:** In WebSocket security, passing the bearer token in the initial protocol handshake message keeps credentials out of query URLs and browser histories while avoiding the cross-site hijacking risks associated with ambient cookie transport.
+
+**Decisions logged in DECISIONS.md:** Yes — ADR-025 through ADR-028.
+
+
