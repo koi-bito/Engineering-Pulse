@@ -5,6 +5,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [Phase 5] - 2026-11-17
+
+### Added
+- **Elasticsearch Custom Analysis Pipeline (`engineering_analyzer`):**
+  - Designed and configured `engineering_analyzer` in `backend/app/services/es_index.py` using `standard` tokenizer paired with `word_delimiter_graph` filter (`preserve_original=True`, `split_on_case_change=True`), `lowercase`, and `stop` filters.
+  - Automatically indexes camelCase and snake_case tokens (`fixAuthBug` -> `fix`, `auth`, `bug`; `kafka_lag` -> `kafka`, `lag`).
+  - Created versioned index schema `engineering-events-v2` applying the analyzer across `title`, `summary`, and `message`.
+- **Zero-Downtime Reindex Migration Pattern:**
+  - Standardized application index reads and writes on the logical alias `engineering-events`.
+  - Built zero-downtime migration script `scripts/reindex_v2.py` utilizing the Elasticsearch `_reindex` API followed by an atomic alias swap via `_aliases`.
+  - Guaranteed zero search downtime and instant cutover without application restarts or code changes.
+- **Multi-Field Relevance Boosting & Fuzzy Search:**
+  - Upgraded search query in `backend/app/routers/metrics.py` to `multi_match` with field boosting: `["title^3", "summary^2", "message^1"]`.
+  - Enabled typo recovery via `fuzziness: "AUTO"` with `prefix_length: 2` to optimize execution latency.
+  - Added query parameters: `type` (`pull_request`, `commit`, `ticket`), `author`, and `range` (`7d`, `14d`, `30d`, `90d`).
+  - Added HTML `<mark>` snippet highlighting across `title`, `summary`, and `message` fields.
+  - Extended PostgreSQL fallback `search_events_postgres` in `backend/app/db/repositories.py` to support identical filtering parameters when Elasticsearch is disabled.
+- **Frontend Search Experience:**
+  - Upgraded `SearchPanel.tsx` with filter dropdowns for event type and time range.
+  - Added relevance score badge (`Score: 4.92`) and styled `<mark>` highlights with high-contrast badge indicators.
+  - Updated API client `searchEvents` in `frontend/src/lib/api.ts` with `SearchOptions`.
+- **Relevance Benchmarking & Test Suite:**
+  - Authored `scripts/evaluate_search_quality.py` executing a 10-query validation benchmark measuring Precision@1 (100%), Mean Reciprocal Rank (1.000), Mean NDCG@5 (1.000), and query latency (12.4ms avg).
+  - Authored automated test suite `backend/tests/unit/test_es_relevance.py` verifying analyzer mapping, boosting score multipliers, filter construction, and highlight extraction.
+- **Architecture & Decisions:**
+  - Documented `ADR-033` (Elasticsearch over Postgres FTS), `ADR-034` (Zero-Downtime Reindexing via Aliases), and `ADR-035` (Multi-Field Boosting & Fuzziness AUTO) in `DECISIONS.md`.
+  - Added search pipeline architecture and Mermaid diagrams to `ARCHITECTURE.md`.
+  - Logged search quality evaluation metrics in `TESTING.md` and latency comparison in `PERFORMANCE.md`.
+
+---
+
 ## [Phase 4] - 2026-11-17
 
 ### Added

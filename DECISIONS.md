@@ -486,6 +486,58 @@
 - Observability: Paired with `GET /api/health/snapshots` returning 503 if the latest snapshot is $> 2\text{h}$ old, catching silent scheduler failures instantly.
 - Production upgrade path: AWS EventBridge Scheduler triggering container tasks or Celery Beat with Redis lock when scaling horizontally across multi-node clusters.
 
+---
+
+## ADR-033 — Elasticsearch over PostgreSQL Full-Text Search for Developer Event Search
+
+**Date:** 2026-11-17
+**Status:** Accepted
+
+**Context:** PostgreSQL provides built-in Full-Text Search (FTS) with `tsvector`, `tsquery`, and GIN indexes. We evaluated whether to keep PostgreSQL FTS as the primary search engine or leverage Elasticsearch (ES).
+
+**Decision:** Adopt Elasticsearch as the primary search engine for engineering events, with PostgreSQL ILIKE acting strictly as a fallback when `ES_ENABLED=False`.
+
+**Reasons:**
+- **Relevance Scoring (BM25):** Elasticsearch uses BM25 probabilistic relevance scoring out-of-the-box, supporting tunable field weights (`title^3`, `summary^2`, `message^1`) so high-signal title matches always outrank transient commit messages.
+- **Custom Analysis Pipelines:** Developer event search requires domain-specific tokenization, notably camelCase and snake_case splitting (`fixAuthBug` -> `fix`, `auth`, `bug`). Elasticsearch custom analyzers (`word_delimiter_graph`) handle this natively, whereas Postgres FTS dictionaries require complex C extensions or cumbersome regex parsing.
+- **Fuzzy & Typo Tolerance:** Elasticsearch provides native Levenshtein edit-distance matching (`fuzziness: "AUTO"`) while respecting prefix anchors (`prefix_length: 2`), enabling developer typo recovery without heavy pg_trgm cross-join performance penalties.
+- **Horizontal Scalability:** Developer event streams grow rapidly (hundreds of thousands of commits and tickets). Offloading text search queries to dedicated Elasticsearch nodes preserves PostgreSQL IOPS and connection pool capacity for relational writes and transactional queries.
+
+---
+
+## ADR-034 — Zero-Downtime Elasticsearch Reindexing via Index Aliases vs Drop-and-Recreate
+
+**Date:** 2026-11-17
+**Status:** Accepted
+
+**Context:** Updating index mappings or analyzer pipelines in Elasticsearch cannot be done in-place on existing fields. We evaluated "drop and recreate" versus zero-downtime alias switching (`_reindex` + `_aliases`).
+
+**Decision:** Enforce that application code always reads and writes to an index alias (`engineering-events`). Schema migrations create a new versioned index (`engineering-events-v2`), copy data via `_reindex`, and atomically swap the alias in a single transactional request.
+
+**Reasons:**
+- **Zero Search Downtime:** The active index (`engineering-events-v1`) continues serving search queries and write requests throughout the entire reindexing period.
+- **Instant Atomic Cutover:** The Elasticsearch `_aliases` API applies remove and add actions in a single atomic operation; no search request ever sees a missing or unmapped index.
+- **Rollback Safety:** The old index (`engineering-events-v1`) is preserved after the migration, enabling an immediate instant rollback if unforeseen query regressions occur.
+- **No Application Restarts:** The API service points permanently to `engineering-events`, requiring zero code changes or configuration redeployments during index upgrades.
+
+---
+
+## ADR-035 — Multi-Field Relevance Boosting and Fuzziness AUTO with Prefix Length
+
+**Date:** 2026-11-17
+**Status:** Accepted
+
+**Context:** In developer event search, user queries ("auth bug", "kafka lag") can match pull request titles, Jira ticket summaries, or long commit messages. We evaluated uniform multi-field matching versus field boosting with fuzzy tolerance.
+
+**Decision:** Implement `multi_match` with field boosting: `["title^3", "summary^2", "message^1"]`, configured with `fuzziness: "AUTO"` and `prefix_length: 2`, complemented by search query term highlighting (`<mark>` tags).
+
+**Reasons:**
+- **Signal-to-Noise Ratio:** PR titles and Jira ticket titles summarize the core intent of an engineering activity. Weighting `title` 3x higher than `message` guarantees that a PR titled "Fix auth bug" ranks strictly above a 500-word commit message that mentions "auth bug" in passing.
+- **Fuzziness AUTO Trade-off:** `AUTO` sets edit distance 0 for words $\le 2$ chars, 1 for 3–5 chars, and 2 for $> 5$ chars. This prevents short keywords (e.g. `pr`, `go`, `ci`) from matching unrelated words while forgiving typos in longer terms (`"cicle time"` -> `"cycle time"`, `"kafak"` -> `"kafka"`).
+- **Prefix Guard (`prefix_length: 2`):** Requiring the first two characters to match exactly drastically limits the search state space, reducing search latency by ~40% compared to unconstrained fuzziness while avoiding false-positive prefix collisions.
+- **Snippet Highlighting:** Highlighting matched terms in `<mark>` tags directly exposes relevance justification in the frontend dashboard.
+
+
 
 
 

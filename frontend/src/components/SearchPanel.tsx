@@ -8,6 +8,8 @@ const SEARCH_DEBOUNCE_MS = 300;
 export function SearchPanel() {
   const [input, setInput] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [typeFilter, setTypeFilter] = useState<string>("");
+  const [rangeFilter, setRangeFilter] = useState<string>("");
 
   useEffect(() => {
     const trimmed = input.trim();
@@ -18,8 +20,12 @@ export function SearchPanel() {
   }, [input]);
 
   const searchQuery = useQuery({
-    queryKey: ["search", debouncedQuery],
-    queryFn: () => searchEvents(debouncedQuery),
+    queryKey: ["search", debouncedQuery, typeFilter, rangeFilter],
+    queryFn: () =>
+      searchEvents(debouncedQuery, {
+        type: typeFilter || undefined,
+        range: rangeFilter || undefined,
+      }),
     enabled: debouncedQuery.length > 0,
   });
 
@@ -37,6 +43,35 @@ export function SearchPanel() {
           value={input}
           onChange={(e) => setInput(e.target.value)}
         />
+        <div className="ep-search-filters">
+          <label className="ep-filter-label">
+            Type:
+            <select
+              className="ep-select"
+              value={typeFilter}
+              onChange={(e) => setTypeFilter(e.target.value)}
+            >
+              <option value="">All Types</option>
+              <option value="pull_request">Pull Requests</option>
+              <option value="commit">Commits</option>
+              <option value="ticket">Jira Tickets</option>
+            </select>
+          </label>
+          <label className="ep-filter-label">
+            Range:
+            <select
+              className="ep-select"
+              value={rangeFilter}
+              onChange={(e) => setRangeFilter(e.target.value)}
+            >
+              <option value="">All Time</option>
+              <option value="7d">Last 7 Days</option>
+              <option value="14d">Last 14 Days</option>
+              <option value="30d">Last 30 Days</option>
+              <option value="90d">Last 90 Days</option>
+            </select>
+          </label>
+        </div>
       </div>
 
       {debouncedQuery.length === 0 ? (
@@ -65,6 +100,11 @@ export function SearchPanel() {
                     <span className="ep-badge">
                       {hit.source ?? "unknown"}:{hit.type ?? "event"}
                     </span>
+                    {hit.score !== null && (
+                      <span className="ep-badge ep-badge-score">
+                        Score: {hit.score.toFixed(2)}
+                      </span>
+                    )}
                     {hit.repo && <span className="ep-muted">{hit.repo}</span>}
                     {hit.author && <span className="ep-muted">by {hit.author}</span>}
                     {hit.timestamp && (
@@ -73,7 +113,14 @@ export function SearchPanel() {
                       </span>
                     )}
                   </div>
-                  <p className="ep-search-snippet">{hit.snippet}</p>
+                  {hit.highlight ? (
+                    <p
+                      className="ep-search-snippet"
+                      dangerouslySetInnerHTML={{ __html: hit.highlight }}
+                    />
+                  ) : (
+                    <p className="ep-search-snippet">{hit.snippet}</p>
+                  )}
                 </li>
               ))}
             </ul>
@@ -83,4 +130,3 @@ export function SearchPanel() {
     </div>
   );
 }
-

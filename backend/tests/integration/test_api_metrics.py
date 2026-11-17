@@ -211,6 +211,17 @@ async def test_search_uses_elasticsearch_and_handles_missing_index(
     assert body["results"][0]["snippet"] == "Fix auth refresh race"
     assert len(fake_es_client.search_calls) == 1
 
+    # Filtered query testing
+    filtered_res = await api_client.get(
+        "/api/search?q=auth&type=pull_request&author=alice&range=30d"
+    )
+    assert filtered_res.status_code == 200
+    assert len(fake_es_client.search_calls) == 2
+
+    # Invalid range parameter -> 422 Validation Error
+    invalid_range = await api_client.get("/api/search?q=auth&range=invalid")
+    assert invalid_range.status_code == 422
+
     fake_es_client.not_found = True
     empty_res = await api_client.get("/api/search?q=unindexed")
     assert empty_res.status_code == 200

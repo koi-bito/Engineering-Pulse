@@ -159,28 +159,58 @@ async def _search_elasticsearch(
     query: str,
     limit: int,
     team_id: Any | None = None,
+    type_filter: str | None = None,
+    author_filter: str | None = None,
+    range_str: str | None = None,
 ) -> dict[str, Any]:
+    # 5.3 Multi-field boosted search with fuzziness and prefix matching
     match_query: dict[str, Any] = {
         "multi_match": {
             "query": query,
-            "fields": ["title", "summary", "message"],
+            "fields": ["title^3", "summary^2", "message^1"],
+            "fuzziness": "AUTO",
+            "prefix_length": 2,
         }
     }
+
+    filters: list[dict[str, Any]] = []
     if team_id:
+        filters.append({"term": {"team_id": str(team_id)}})
+    if type_filter:
+        filters.append({"term": {"type": type_filter}})
+    if author_filter:
+        filters.append({"term": {"author": author_filter}})
+    if range_str:
+        filters.append({"range": {"timestamp": {"gte": f"now-{range_str}"}}})
+
+    if filters:
         es_query: dict[str, Any] = {
             "bool": {
                 "must": [match_query],
-                "filter": [{"term": {"team_id": str(team_id)}}],
+                "filter": filters,
             }
         }
     else:
         es_query = match_query
+
+    highlight_spec: dict[str, Any] = {
+        "fields": {
+            "title": {"pre_tags": ["<mark>"], "post_tags": ["</mark>"]},
+            "summary": {"pre_tags": ["<mark>"], "post_tags": ["</mark>"]},
+            "message": {
+                "fragment_size": 150,
+                "pre_tags": ["<mark>"],
+                "post_tags": ["</mark>"],
+            },
+        }
+    }
 
     try:
         response = await es_client.search(
             index=ES_ALIAS,
             query=es_query,
             size=limit,
+            highlight=highlight_spec,
         )
     except NotFoundError:
         return {"query": query, "total_hits": 0, "results": []}
@@ -190,6 +220,13 @@ async def _search_elasticsearch(
     results = []
     for hit in raw_hits:
         src = hit.get("_source", {})
+        hl_block = hit.get("highlight", {})
+        hl_text = None
+        if hl_block:
+            hl_list = hl_block.get("title") or hl_block.get("summary") or hl_block.get("message")
+            if hl_list:
+                hl_text = " ... ".join(hl_list)
+
         results.append(
             {
                 "id": hit.get("_id"),
@@ -199,6 +236,7 @@ async def _search_elasticsearch(
                 "repo": src.get("repo"),
                 "timestamp": src.get("timestamp"),
                 "snippet": src.get("title") or src.get("summary") or src.get("message") or "",
+                "highlight": hl_text,
                 "score": hit.get("_score"),
             }
         )
@@ -215,6 +253,9 @@ async def _search_elasticsearch(
 async def search_events(
     request: Request,
     q: str = Query(..., min_length=1, max_length=200),
+    type: str | None = Query(default=None, pattern="^(pull_request|commit|ticket)$"),
+    author: str | None = Query(default=None, max_length=100),
+    range: str | None = Query(default=None, pattern="^(7d|14d|30d|90d)$"),
     limit: int = Query(default=20, ge=1, le=100),
 ) -> dict[str, Any]:
     cleaned = q.strip()
@@ -229,16 +270,42 @@ async def search_events(
     cfg = _get_settings(request)
     redis_client = request.app.state.redis
     es_client = getattr(request.app.state, "es_client", None)
+    range_days = _RANGE_DAYS.get(range) if range else None
 
     async def _load() -> dict[str, Any]:
         if cfg.ES_ENABLED and es_client is not None:
-            return await _search_elasticsearch(es_client, cleaned, limit, team_id=team_id)
-        results = await _run_db_query(request, search_events_postgres, cleaned, limit, team_id)
+            return await _search_elasticsearch(
+                es_client,
+                cleaned,
+                limit,
+                team_id=team_id,
+                type_filter=type,
+                author_filter=author,
+                range_str=range,
+            )
+        results = await _run_db_query(
+            request,
+            search_events_postgres,
+            cleaned,
+            limit,
+            team_id,
+            type,
+            author,
+            range_days,
+        )
         return {"query": cleaned, "total_hits": len(results), "results": results}
 
     data, _ = await get_or_compute_cached(
         redis_client,
-        search_cache_key(cleaned, limit, org_id, team_id),
+        search_cache_key(
+            cleaned,
+            limit,
+            org_id,
+            team_id,
+            type_filter=type,
+            author_filter=author,
+            range_str=range,
+        ),
         SEARCH_CACHE_TTL_SECONDS,
         _load,
     )

@@ -67,6 +67,7 @@ export interface SearchHit {
   repo: string | null;
   timestamp: string | null;
   snippet: string;
+  highlight?: string | null;
   score: number | null;
 }
 
@@ -210,10 +211,22 @@ export async function fetchActiveSprint(project?: string): Promise<SprintActiveR
   return data;
 }
 
-export async function searchEvents(query: string): Promise<SearchResponse> {
-  const { data } = await api.get<SearchResponse>("/api/search", {
-    params: { q: query },
-  });
+export interface SearchOptions {
+  type?: string;
+  author?: string;
+  range?: string;
+}
+
+export async function searchEvents(
+  query: string,
+  options?: SearchOptions
+): Promise<SearchResponse> {
+  const params: Record<string, string> = { q: query };
+  if (options?.type) params.type = options.type;
+  if (options?.author) params.author = options.author;
+  if (options?.range) params.range = options.range;
+
+  const { data } = await api.get<SearchResponse>("/api/search", { params });
   return data;
 }
 

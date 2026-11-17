@@ -55,8 +55,13 @@ def search_cache_key(
     limit: int = 20,
     org_id: Any | None = None,
     team_id: Any | None = None,
+    type_filter: str | None = None,
+    author_filter: str | None = None,
+    range_str: str | None = None,
 ) -> str:
-    digest = hashlib.sha256(query.strip().lower().encode("utf-8")).hexdigest()[:16]
+    filter_sig = f"{type_filter or ''}:{author_filter or ''}:{range_str or ''}"
+    composite = f"{query.strip().lower()}:{filter_sig}"
+    digest = hashlib.sha256(composite.encode("utf-8")).hexdigest()[:16]
     return f"{tenant_prefix(org_id, team_id)}search:{digest}:{limit}"
 
 

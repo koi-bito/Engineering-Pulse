@@ -431,10 +431,14 @@ async def search_events_postgres(
     query: str,
     limit: int = 20,
     team_id: uuid.UUID | str | None = None,
+    type_filter: str | None = None,
+    author_filter: str | None = None,
+    range_days: int | None = None,
 ) -> list[dict[str, Any]]:
     team_uuid = _to_uuid(team_id)
     escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     pattern = f"%{escaped}%"
+    author_pattern = f"%{author_filter.strip()}%" if author_filter else None
     rows = await conn.fetch(
         """
         SELECT id, type, source, author, repo, timestamp, snippet
@@ -450,6 +454,8 @@ async def search_events_postgres(
             FROM pull_requests
             WHERE (title ILIKE $1 ESCAPE '\\' OR repo ILIKE $1 ESCAPE '\\' OR author ILIKE $1 ESCAPE '\\')
               AND ($3::uuid IS NULL OR team_id = $3::uuid)
+              AND ($4::text IS NULL OR author ILIKE $4)
+              AND ($5::int IS NULL OR opened_at >= NOW() - ($5 || ' days')::interval)
             UNION ALL
             SELECT
                 'commit:' || sha AS id,
@@ -462,6 +468,8 @@ async def search_events_postgres(
             FROM commits
             WHERE (message ILIKE $1 ESCAPE '\\' OR repo ILIKE $1 ESCAPE '\\' OR author ILIKE $1 ESCAPE '\\')
               AND ($3::uuid IS NULL OR team_id = $3::uuid)
+              AND ($4::text IS NULL OR author ILIKE $4)
+              AND ($5::int IS NULL OR timestamp >= NOW() - ($5 || ' days')::interval)
             UNION ALL
             SELECT
                 'ticket:' || id AS id,
@@ -474,13 +482,19 @@ async def search_events_postgres(
             FROM jira_tickets
             WHERE (summary ILIKE $1 ESCAPE '\\' OR project ILIKE $1 ESCAPE '\\' OR id ILIKE $1 ESCAPE '\\')
               AND ($3::uuid IS NULL OR team_id = $3::uuid)
+              AND ($4::text IS NULL OR assignee ILIKE $4)
+              AND ($5::int IS NULL OR created_at >= NOW() - ($5 || ' days')::interval)
         ) AS combined
+        WHERE ($6::text IS NULL OR type = $6)
         ORDER BY timestamp DESC
         LIMIT $2
         """,
         pattern,
         limit,
         team_uuid,
+        author_pattern,
+        range_days,
+        type_filter,
     )
     return [
         {
@@ -491,6 +505,7 @@ async def search_events_postgres(
             "repo": row["repo"],
             "timestamp": to_utc_iso(row["timestamp"]),
             "snippet": row["snippet"],
+            "highlight": None,
             "score": None,
         }
         for row in rows

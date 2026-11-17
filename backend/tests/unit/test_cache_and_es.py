@@ -8,7 +8,7 @@ from app.services.cache import (
     set_cached_json,
     sprint_active_key,
 )
-from app.services.es_index import ES_ALIAS, ES_INITIAL_INDEX, ElasticsearchIndexer
+from app.services.es_index import ES_ALIAS, ES_V2_INDEX, ElasticsearchIndexer
 from tests.conftest import FakeAsyncRedis
 
 
@@ -64,7 +64,7 @@ async def test_es_indexer_uses_alias_and_respects_enabled_flag() -> None:
     await indexer.index_event("pr:1", {"title": "Fix bug"})
 
     assert len(fake_es.indices.created) == 1
-    assert fake_es.indices.created[0]["index"] == ES_INITIAL_INDEX
+    assert fake_es.indices.created[0]["index"] == ES_V2_INDEX
     assert fake_es.indices.created[0]["aliases"] == {ES_ALIAS: {}}
     assert fake_es.indexed == [
         {"index": ES_ALIAS, "id": "pr:1", "document": {"title": "Fix bug"}}
