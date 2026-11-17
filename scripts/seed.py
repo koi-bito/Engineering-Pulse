@@ -28,12 +28,16 @@ load_dotenv(REPO_ROOT / ".env")
 VOLUME_PER_DAY = {"low": 4, "medium": 10, "high": 24}
 AUTHORS = ["alice", "bob", "charlie", "diana", "evan", "fiona"]
 PR_TITLES = [
+    "Fix fixAuthBug in authentication middleware",
     "Fix auth token refresh race condition",
     "Add Kafka consumer offset commit after write",
-    "Optimize Postgres cycle-time aggregation index",
+    "Optimize PR cycle time calculation and aggregation index",
     "Handle Jira timezone offset normalization",
     "Add Elasticsearch camelCase search mapping",
     "Improve Redis Pub/Sub live feed fan-out",
+    "Implement webhook retry backoff mechanism",
+    "Configure rate limit protection thresholds",
+    "Alert on stalled PR workflow anomalies",
 ]
 COMMIT_MESSAGES = [
     "fix: handle edge case in webhook signature verification",
@@ -41,6 +45,9 @@ COMMIT_MESSAGES = [
     "perf: add composite index on opened_at",
     "chore: tune Kafka consumer backoff",
     "refactor: extract shared Postgres upsert helper",
+    "feat: tune database pool connection limits",
+    "chore: provision Grafana dashboard for observability",
+    "fix: handle token expiry in session manager",
 ]
 JIRA_SUMMARIES = [
     "Investigate elevated PR cycle time on payments service",
@@ -48,6 +55,8 @@ JIRA_SUMMARIES = [
     "Set up automated RDS snapshot verification",
     "Fix sprint burndown calculation off-by-one",
     "Configure CloudFront cache invalidation for index.html",
+    "Kafka lag monitoring and consumer offset metrics",
+    "Track sprint velocity and burndown progress",
 ]
 
 

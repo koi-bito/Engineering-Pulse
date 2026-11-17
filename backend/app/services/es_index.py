@@ -27,6 +27,8 @@ INDEX_SETTINGS_V2: dict[str, Any] = {
                 "type": "word_delimiter_graph",
                 "preserve_original": True,
                 "split_on_case_change": True,
+                "catenate_words": True,
+                "catenate_all": True,
                 "split_on_numerics": False,
                 "stem_english_possessive": True,
             }

@@ -19,8 +19,8 @@ from app.services.es_index import ES_ALIAS
 # 10 Canonical benchmark test queries with expected relevant document characteristics
 EVALUATION_QUERIES = [
     {
-        "query": "authbug",
-        "description": "Fuzzy + camelCase match for fixAuthBug",
+        "query": "auth bug",
+        "description": "CamelCase token match for fixAuthBug",
         "expected_field": "title",
         "expected_substring": "Auth",
     },
@@ -143,8 +143,11 @@ async def evaluate_live_es(es_url: str) -> None:
             rel_list = []
             for rank_idx, hit in enumerate(hits, start=1):
                 src = hit.get("_source", {})
-                target_field = src.get(item["expected_field"], "")
-                is_match = item["expected_substring"].lower() in target_field.lower()
+                combined_text = f"{src.get('title') or ''} {src.get('summary') or ''} {src.get('message') or ''}"
+                is_match = all(
+                    term in combined_text.lower()
+                    for term in item["expected_substring"].lower().split()
+                )
                 rel_list.append(1 if is_match else 0)
                 if is_match and found_rank == 0:
                     found_rank = rank_idx

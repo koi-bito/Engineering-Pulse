@@ -11,7 +11,7 @@ import os
 import sys
 import time
 
-from elasticsearch import AsyncElasticsearch
+from elasticsearch import AsyncElasticsearch, NotFoundError
 
 # Ensure backend app imports are accessible
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend"))
@@ -30,6 +30,7 @@ async def run_reindex(
     dest_index: str,
     alias_name: str,
     delete_old: bool = False,
+    force: bool = False,
 ) -> None:
     print(f"Connecting to Elasticsearch at {es_url}...")
     es = AsyncElasticsearch(es_url)
@@ -41,6 +42,11 @@ async def run_reindex(
 
         # 1. Create destination index with v2 analysis & mapping if not exists
         dest_exists = await es.indices.exists(index=dest_index)
+        if dest_exists and force:
+            print(f"Force flag set: deleting existing destination index '{dest_index}'...")
+            await es.indices.delete(index=dest_index)
+            dest_exists = False
+
         if not dest_exists:
             print(f"Creating destination index '{dest_index}' with custom analyzer...")
             await es.indices.create(
@@ -89,14 +95,16 @@ async def run_reindex(
 
         # 4. Atomically swap alias
         print(f"Swapping alias '{alias_name}' to '{dest_index}'...")
-        # Check current aliases
-        alias_info = await es.indices.get_alias(name=alias_name, ignore_unavailable=True)
         actions = []
-        if isinstance(alias_info, dict):
-            for idx in alias_info:
-                actions.append({"remove": {"index": idx, "alias": alias_name}})
+        try:
+            alias_info = await es.indices.get_alias(name=alias_name, ignore_unavailable=True)
+            if isinstance(alias_info, dict):
+                for idx in alias_info:
+                    actions.append({"remove": {"index": idx, "alias": alias_name}})
+        except NotFoundError:
+            pass
 
-        actions.append({"add": {"index": dest_index, "alias": alias_name}})
+        actions.append({"add": {"index": dest_index, "alias": alias_name, "is_write_index": True}})
         await es.indices.update_aliases(actions=actions)
         print(f"Alias '{alias_name}' atomically pointed to '{dest_index}'.")
 
@@ -141,6 +149,11 @@ def main() -> None:
         action="store_true",
         help="Drop source index after successful cutover",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Recreate destination index with updated settings",
+    )
     args = parser.parse_args()
 
     asyncio.run(
@@ -150,6 +163,7 @@ def main() -> None:
             dest_index=args.dest_index,
             alias_name=args.alias,
             delete_old=args.delete_old,
+            force=args.force,
         )
     )
 
