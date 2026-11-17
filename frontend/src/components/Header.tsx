@@ -8,6 +8,8 @@ interface HeaderProps {
   teams?: Team[];
   activeTeamId?: string | null;
   onSelectTeam?: (teamId: string) => void;
+  activeAlertsCount?: number;
+  onToggleAlerts?: () => void;
 }
 
 export function Header({
@@ -17,6 +19,8 @@ export function Header({
   teams = [],
   activeTeamId,
   onSelectTeam,
+  activeAlertsCount = 0,
+  onToggleAlerts,
 }: HeaderProps) {
   const statusLabel =
     apiHealthy === null
@@ -32,6 +36,16 @@ export function Header({
         <h1>Engineering Pulse</h1>
       </div>
       <div className="ep-header-meta">
+        {onToggleAlerts && (
+          <button
+            type="button"
+            className={`ep-alerts-btn ${activeAlertsCount > 0 ? "has-alerts" : ""}`}
+            onClick={onToggleAlerts}
+            title="View Workflow Alerts"
+          >
+            ⚠️ {activeAlertsCount} {activeAlertsCount === 1 ? "Alert" : "Alerts"}
+          </button>
+        )}
         {teams.length > 0 && onSelectTeam && (
           <div className="ep-team-switcher">
             <label htmlFor="team-select" className="ep-team-label">

@@ -40,7 +40,13 @@ def test_ws_feed_streams_redis_pubsub_and_cleans_up_on_disconnect() -> None:
 
     with TestClient(app) as client, client.websocket_connect("/ws/feed") as ws:
         ws.send_json({"type": "auth", "token": token})
-        assert len(fake_redis.subscribers[LIVE_FEED_CHANNEL]) == 1
+        for _ in range(50):
+            if fake_redis.subscribers.get(LIVE_FEED_CHANNEL):
+                break
+            import time
+
+            time.sleep(0.02)
+        assert len(fake_redis.subscribers.get(LIVE_FEED_CHANNEL, [])) == 1
 
         fake_redis.publish_sync(
             LIVE_FEED_CHANNEL,

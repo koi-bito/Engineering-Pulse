@@ -453,5 +453,39 @@
 - Flexibility: Organizations can rotate individual team webhook tokens without affecting other teams or requiring global environment restarts.
 - Backwards compatibility: Single-tenant fallback to `GITHUB_WEBHOOK_SECRET` and `JIRA_WEBHOOK_SECRET` remains fully functional when no team secret matches.
 
+---
+
+## ADR-031 — Statistical Anomaly Detection (Rolling Mean + Standard Deviation) vs Prophet
+
+**Date:** 2026-11-17
+**Status:** Accepted
+
+**Context:** Phase 4 introduces automated anomaly detection to alert on workflow degradation (e.g., cycle time spikes, stalled pull requests, sprint burndown velocity drop). We evaluated Facebook Prophet vs a rolling statistical band ($\mu \pm 2\sigma$).
+
+**Decision:** Ship statistical anomaly detection first using rolling mean and standard deviation over a 30-day snapshot baseline with configurable multipliers, suppression windows, and minimum sample guards, deferring Facebook Prophet.
+
+**Reasons:**
+- Data requirements: Prophet relies on multi-seasonality decomposition (daily, weekly, yearly) requiring 1–2 years of continuous data. On smaller or seeded datasets, Prophet models overfit noise and increase false alarms.
+- Low overhead & deterministic behavior: Rolling statistics compute in sub-millisecond time, have zero heavy C++/Stan compile dependencies, and provide clear interpretability ($actual > \mu + 2\sigma$).
+- Production hardening: Time was invested in battle-tested alerting capabilities: suppression windows to eliminate alert fatigue, auto-resolution when metrics normalize, and multi-metric alert grouping.
+
+---
+
+## ADR-032 — APScheduler with Database Idempotency vs Celery Beat for In-Process Job Execution
+
+**Date:** 2026-11-17
+**Status:** Accepted
+
+**Context:** Hourly metrics snapshots and anomaly detection require scheduled background execution. We evaluated running Celery Beat with a distributed Redis lock versus in-process `APScheduler` (AsyncIOScheduler) inside the FastAPI application.
+
+**Decision:** Adopt `APScheduler` (`AsyncIOScheduler`) embedded in the FastAPI lifespan, paired with PostgreSQL unique constraint `UNIQUE (team_id, metric_name, date_trunc('hour', recorded_at))` to enforce write idempotency.
+
+**Reasons:**
+- Operational simplicity: Eliminates Celery worker processes, broker result backends, and distributed lock coordination for a single-node architecture.
+- Idempotency mitigation: If the process restarts mid-hour or fires twice, the database constraint `ON CONFLICT ... DO NOTHING` prevents duplicate snapshots and corrupted baseline averages.
+- Observability: Paired with `GET /api/health/snapshots` returning 503 if the latest snapshot is $> 2\text{h}$ old, catching silent scheduler failures instantly.
+- Production upgrade path: AWS EventBridge Scheduler triggering container tasks or Celery Beat with Redis lock when scaling horizontally across multi-node clusters.
+
+
 
 

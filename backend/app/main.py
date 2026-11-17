@@ -4,6 +4,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from typing import Any
 
 import redis.asyncio as redis_async
 import structlog
@@ -22,6 +23,7 @@ from app.auth.middleware import JWTAuthMiddleware
 from app.config import Settings, get_settings
 from app.db.pool import create_pg_pool
 from app.routers.admin import router as admin_router
+from app.routers.alerts import router as alerts_router
 from app.routers.auth import (
     auth_limiter,
     configure_auth_limiter,
@@ -191,9 +193,35 @@ def create_app(
             application.state.kafka_producer = producer
             lag_task = asyncio.create_task(_kafka_lag_loop(cfg.KAFKA_BOOTSTRAP_SERVERS))
 
+        scheduler: Any = None
+        if owns_db_pool:
+            try:
+                from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+                from app.services.anomaly_detector import run_snapshot_and_anomaly_cycle
+
+                scheduler = AsyncIOScheduler()
+                scheduler.add_job(
+                    lambda: asyncio.create_task(
+                        run_snapshot_and_anomaly_cycle(
+                            application.state.db_pool,
+                            getattr(application.state, "redis", None),
+                        )
+                    ),
+                    "interval",
+                    hours=1,
+                    id="anomaly_hourly_job",
+                )
+                scheduler.start()
+                application.state.scheduler = scheduler
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("scheduler_init_failed", error=str(exc))
+
         try:
             yield
         finally:
+            if scheduler is not None:
+                scheduler.shutdown(wait=False)
             if lag_task is not None:
                 lag_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -228,6 +256,7 @@ def create_app(
     app.include_router(webhooks_router)
     app.include_router(metrics_router)
     app.include_router(tenants_router)
+    app.include_router(alerts_router)
     app.include_router(ws_router)
     app.include_router(admin_router)
 

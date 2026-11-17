@@ -651,3 +651,326 @@ async def fetch_all_webhook_registrations(
         )
     return [dict(r) for r in rows]
 
+
+# ---------------------------------------------------------------------------
+# Phase 4: Metrics Snapshots & Anomaly Alerting Repositories
+# ---------------------------------------------------------------------------
+
+
+async def record_metrics_snapshot(
+    conn: asyncpg.Connection,
+    team_id: uuid.UUID | str,
+    metric_name: str,
+    value: float,
+    recorded_at: datetime | None = None,
+) -> dict[str, Any] | None:
+    team_uuid = _to_uuid(team_id)
+    rec_time = recorded_at or datetime.now(UTC)
+    snap_id = uuid.uuid4()
+    row = await conn.fetchrow(
+        """
+        INSERT INTO metrics_snapshots (id, team_id, metric_name, value, recorded_at)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (team_id, metric_name, (date_trunc('hour', recorded_at AT TIME ZONE 'UTC'))) DO NOTHING
+        RETURNING id, team_id, metric_name, value, recorded_at
+        """,
+        snap_id,
+        team_uuid,
+        metric_name,
+        float(value),
+        rec_time,
+    )
+    return dict(row) if row else None
+
+
+async def fetch_metrics_snapshots(
+    conn: asyncpg.Connection,
+    team_id: uuid.UUID | str,
+    metric_name: str,
+    days: int = 30,
+) -> list[dict[str, Any]]:
+    team_uuid = _to_uuid(team_id)
+    rows = await conn.fetch(
+        """
+        SELECT id, team_id, metric_name, value, recorded_at
+        FROM metrics_snapshots
+        WHERE team_id = $1
+          AND metric_name = $2
+          AND recorded_at >= (NOW() AT TIME ZONE 'UTC') - ($3::int * INTERVAL '1 day')
+        ORDER BY recorded_at ASC
+        """,
+        team_uuid,
+        metric_name,
+        days,
+    )
+    return [
+        {
+            "id": row["id"],
+            "team_id": row["team_id"],
+            "metric_name": row["metric_name"],
+            "value": float(row["value"]),
+            "recorded_at": to_utc_iso(row["recorded_at"]),
+        }
+        for row in rows
+    ]
+
+
+async def fetch_latest_snapshot_timestamp(
+    conn: asyncpg.Connection,
+    team_id: uuid.UUID | str | None = None,
+) -> datetime | None:
+    team_uuid = _to_uuid(team_id)
+    row = await conn.fetchrow(
+        """
+        SELECT MAX(recorded_at) AS latest
+        FROM metrics_snapshots
+        WHERE ($1::uuid IS NULL OR team_id = $1::uuid)
+        """,
+        team_uuid,
+    )
+    return row["latest"] if row and row["latest"] else None
+
+
+async def get_or_create_alert_config(
+    conn: asyncpg.Connection,
+    team_id: uuid.UUID | str | None,
+    metric_name: str,
+) -> dict[str, Any]:
+    team_uuid = _to_uuid(team_id)
+    row = await conn.fetchrow(
+        """
+        SELECT id, team_id, metric_name, std_multiplier, min_data_points, suppression_window_minutes, created_at, updated_at
+        FROM alert_configs
+        WHERE (team_id = $1 OR team_id IS NULL)
+          AND metric_name = $2
+        ORDER BY team_id NULLS LAST
+        LIMIT 1
+        """,
+        team_uuid,
+        metric_name,
+    )
+    if row:
+        return {
+            "id": row["id"],
+            "team_id": row["team_id"],
+            "metric_name": row["metric_name"],
+            "std_multiplier": float(row["std_multiplier"]),
+            "min_data_points": int(row["min_data_points"]),
+            "suppression_window_minutes": int(row["suppression_window_minutes"]),
+        }
+    return {
+        "id": None,
+        "team_id": team_uuid,
+        "metric_name": metric_name,
+        "std_multiplier": 2.0,
+        "min_data_points": 7,
+        "suppression_window_minutes": 60,
+    }
+
+
+async def upsert_alert_config(
+    conn: asyncpg.Connection,
+    team_id: uuid.UUID | str | None,
+    metric_name: str,
+    std_multiplier: float = 2.0,
+    min_data_points: int = 7,
+    suppression_window_minutes: int = 60,
+) -> dict[str, Any]:
+    team_uuid = _to_uuid(team_id)
+    cfg_id = uuid.uuid4()
+    row = await conn.fetchrow(
+        """
+        INSERT INTO alert_configs (
+            id, team_id, metric_name, std_multiplier, min_data_points, suppression_window_minutes, updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, NOW() AT TIME ZONE 'UTC')
+        ON CONFLICT (COALESCE(team_id, '00000000-0000-0000-0000-000000000000'::uuid), metric_name)
+        DO UPDATE SET
+            std_multiplier = EXCLUDED.std_multiplier,
+            min_data_points = EXCLUDED.min_data_points,
+            suppression_window_minutes = EXCLUDED.suppression_window_minutes,
+            updated_at = NOW() AT TIME ZONE 'UTC'
+        RETURNING id, team_id, metric_name, std_multiplier, min_data_points, suppression_window_minutes
+        """,
+        cfg_id,
+        team_uuid,
+        metric_name,
+        float(std_multiplier),
+        int(min_data_points),
+        int(suppression_window_minutes),
+    )
+    return dict(row) if row else {
+        "id": cfg_id,
+        "team_id": team_uuid,
+        "metric_name": metric_name,
+        "std_multiplier": std_multiplier,
+        "min_data_points": min_data_points,
+        "suppression_window_minutes": suppression_window_minutes,
+    }
+
+
+async def create_workflow_alert(
+    conn: asyncpg.Connection,
+    team_id: uuid.UUID | str,
+    metric_name: str,
+    actual_value: float,
+    expected_value: float,
+    severity: str = "warning",
+    status: str = "active",
+    group_id: uuid.UUID | str | None = None,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    team_uuid = _to_uuid(team_id)
+    group_uuid = _to_uuid(group_id)
+    alert_id = uuid.uuid4()
+    details_json = json.dumps(details or {})
+    row = await conn.fetchrow(
+        """
+        INSERT INTO workflow_alerts (
+            id, team_id, metric_name, actual_value, expected_value, severity, status, group_id, details, created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, NOW() AT TIME ZONE 'UTC')
+        RETURNING id, team_id, metric_name, actual_value, expected_value, severity, status, group_id, details, created_at
+        """,
+        alert_id,
+        team_uuid,
+        metric_name,
+        float(actual_value),
+        float(expected_value),
+        severity,
+        status,
+        group_uuid,
+        details_json,
+    )
+    return dict(row) if row else {
+        "id": alert_id,
+        "team_id": team_uuid,
+        "metric_name": metric_name,
+        "actual_value": actual_value,
+        "expected_value": expected_value,
+        "severity": severity,
+        "status": status,
+        "group_id": group_uuid,
+        "details": details or {},
+        "created_at": datetime.now(UTC),
+    }
+
+
+async def fetch_recent_alerts_in_window(
+    conn: asyncpg.Connection,
+    team_id: uuid.UUID | str,
+    metric_name: str,
+    window_minutes: int = 60,
+) -> list[dict[str, Any]]:
+    team_uuid = _to_uuid(team_id)
+    rows = await conn.fetch(
+        """
+        SELECT id, team_id, metric_name, actual_value, expected_value, severity, status, group_id, created_at
+        FROM workflow_alerts
+        WHERE team_id = $1
+          AND metric_name = $2
+          AND created_at >= (NOW() AT TIME ZONE 'UTC') - ($3::int * INTERVAL '1 minute')
+          AND status IN ('active', 'suppressed', 'grouped')
+        ORDER BY created_at DESC
+        """,
+        team_uuid,
+        metric_name,
+        window_minutes,
+    )
+    return [dict(r) for r in rows]
+
+
+async def fetch_active_workflow_alerts(
+    conn: asyncpg.Connection,
+    team_id: uuid.UUID | str | None = None,
+) -> list[dict[str, Any]]:
+    team_uuid = _to_uuid(team_id)
+    rows = await conn.fetch(
+        """
+        SELECT id, team_id, metric_name, actual_value, expected_value, severity, status, group_id, details, created_at, resolved_at
+        FROM workflow_alerts
+        WHERE ($1::uuid IS NULL OR team_id = $1::uuid)
+          AND status IN ('active', 'grouped')
+        ORDER BY created_at DESC
+        """,
+        team_uuid,
+    )
+    return [
+        {
+            "id": row["id"],
+            "team_id": row["team_id"],
+            "metric_name": row["metric_name"],
+            "actual_value": float(row["actual_value"]),
+            "expected_value": float(row["expected_value"]),
+            "severity": row["severity"],
+            "status": row["status"],
+            "group_id": row["group_id"],
+            "details": json.loads(row["details"]) if isinstance(row["details"], str) else (row["details"] or {}),
+            "created_at": to_utc_iso(row["created_at"]),
+            "resolved_at": to_utc_iso(row["resolved_at"]),
+        }
+        for row in rows
+    ]
+
+
+async def auto_resolve_alerts_for_metric(
+    conn: asyncpg.Connection,
+    team_id: uuid.UUID | str,
+    metric_name: str,
+) -> int:
+    team_uuid = _to_uuid(team_id)
+    result = await conn.execute(
+        """
+        UPDATE workflow_alerts
+        SET status = 'resolved',
+            resolved_at = NOW() AT TIME ZONE 'UTC'
+        WHERE team_id = $1
+          AND metric_name = $2
+          AND status IN ('active', 'grouped')
+        """,
+        team_uuid,
+        metric_name,
+    )
+    # Result format: "UPDATE <count>"
+    try:
+        return int(result.split(" ")[-1])
+    except (ValueError, IndexError):
+        return 0
+
+
+async def group_recent_alerts(
+    conn: asyncpg.Connection,
+    team_id: uuid.UUID | str,
+    window_minutes: int = 5,
+    min_alerts: int = 3,
+) -> str | None:
+    team_uuid = _to_uuid(team_id)
+    rows = await conn.fetch(
+        """
+        SELECT id, metric_name
+        FROM workflow_alerts
+        WHERE team_id = $1
+          AND status = 'active'
+          AND group_id IS NULL
+          AND created_at >= (NOW() AT TIME ZONE 'UTC') - ($2::int * INTERVAL '1 minute')
+        """,
+        team_uuid,
+        window_minutes,
+    )
+    if len(rows) >= min_alerts:
+        group_id = uuid.uuid4()
+        alert_ids = [r["id"] for r in rows]
+        await conn.execute(
+            """
+            UPDATE workflow_alerts
+            SET group_id = $1,
+                severity = 'critical',
+                status = 'grouped'
+            WHERE id = ANY($2::uuid[])
+            """,
+            group_id,
+            alert_ids,
+        )
+        return str(group_id)
+    return None
+

@@ -104,6 +104,47 @@ flowchart TD
 4. **Prometheus Instrumentation (`backend/app/services/metrics.py`, `backend/app/main.py`):**
    - `prometheus-fastapi-instrumentator` exposes HTTP metrics alongside custom metrics `webhook_events_received_total`, `cache_hit_ratio`, `kafka_consumer_lag`, and `postgres_pool_active_connections` on `GET /metrics`.
 
+## Anomaly Detection & Workflow Alerting Layer (Phase 4)
+
+```mermaid
+flowchart TD
+  subgraph Cron["Hourly Snapshot & Evaluation Engine"]
+    Scheduler["APScheduler (AsyncIOScheduler)"] -->|"Every 1h"| Rollup["Hourly Rollup Engine"]
+    Rollup -->|"Idempotent INSERT ON CONFLICT DO NOTHING"| SnapDB[("metrics_snapshots\nteam_id, metric, recorded_at")]
+    SnapDB -->|"30-day baseline"| Detector["Statistical Detector\nrolling_mean +- 2*std"]
+  end
+
+  subgraph Logic["Anomaly Rules & State Machine"]
+    Detector --> Conf{"Exceeds Threshold\n& min_data_points >= 7?"}
+    Conf -->|"Yes"| Supp{"Within Suppression\nWindow (60m)?"}
+    Conf -->|"No"| Resolve["Auto-Resolve\nActive Alerts"]
+    Supp -->|"Suppressed"| RecSupp["Record alert (suppressed)"]
+    Supp -->|"New"| ActiveAlert["Record alert (active)\nCheck Grouping (>=3 in 5m)"]
+  end
+
+  subgraph Delivery["Real-Time Delivery & UI"]
+    ActiveAlert --> RedPS[("Redis Pub/Sub\nalerts:{team_id}")]
+    RedPS --> WS["WebSocket /ws/feed"]
+    WS --> UI["React Alert Banner & Drawer"]
+    Resolve --> RedPS
+  end
+```
+
+1. **Idempotent Metrics Snapshots (`metrics_snapshots`):**
+   - Hourly background job computes `avg_cycle_time`, `prs_merged_count`, `tickets_opened_count`, `tickets_resolved_count`, and `stalled_prs_count` per team.
+   - Enforced by unique constraint `UNIQUE (team_id, metric_name, date_trunc('hour', recorded_at))` to prevent duplicate baseline corruption on process restarts.
+   - Monitored by `GET /api/health/snapshots` returning HTTP 503 if snapshots are $> 2\text{h}$ old.
+2. **Statistical Anomaly Detection:**
+   - Evaluates current metric against a 30-day rolling baseline ($\mu \pm 2\sigma$).
+   - Guards against cold starts by requiring at least 7 days of historical baseline before triggering alerts.
+   - Suppresses repeated notifications within a configurable suppression window (default 60 minutes) to eliminate alert fatigue.
+   - Groups 3+ simultaneous metric spikes within 5 minutes into a single `critical` grouped incident.
+   - Automatically marks active alerts as resolved with `resolved_at = NOW()` when metrics return to normal baseline levels.
+3. **Real-Time Notification Delivery:**
+   - Published directly to Redis Pub/Sub channels `alerts:{team_id}` and `live-feed:{team_id}`.
+   - Forwarded to authenticated WebSocket clients without requiring browser refreshes.
+   - Displayed via React sticky alert banner for `critical` alerts and an interactive alert drawer.
+
 ## AWS Infrastructure
 
 - **Networking (`infra/modules/vpc`):** VPC across 2 AZs with public subnets (ALB + NAT Gateway + EC2) and private subnets (RDS), isolating ports (`80/443` public on ALB → `8000` on EC2 → `5432` on RDS; SSH disabled by default in favor of AWS SSM).

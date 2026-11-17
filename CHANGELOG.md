@@ -5,6 +5,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [Phase 4] - 2026-11-17
+
+### Added
+- **Database Schema & Models for Anomaly Detection:**
+  - Added Alembic migration `0004_anomaly_detection_schema.py` creating `metrics_snapshots`, `alert_configs`, and `workflow_alerts` tables with full `upgrade()` and `downgrade()`.
+  - Added unique expression constraint `UNIQUE (team_id, metric_name, (date_trunc('hour', recorded_at AT TIME ZONE 'UTC')))` ensuring snapshot write idempotency.
+  - Added SQLAlchemy models in `backend/app/models/anomaly.py`.
+- **Metrics Snapshots & Scheduled Evaluation Engine:**
+  - Implemented `anomaly_detector.py` computing hourly team rollups (`avg_cycle_time`, `prs_merged_count`, `tickets_opened_count`, `tickets_resolved_count`, `stalled_prs_count`).
+  - Integrated `AsyncIOScheduler` (APScheduler) into the FastAPI application lifespan running hourly snapshot generation and anomaly checks.
+  - Added `GET /api/health/snapshots` returning HTTP 503 if snapshot freshness exceeds 2 hours.
+- **Statistical Anomaly Detection & Alerting Rules:**
+  - Implemented rolling statistical band analysis ($\mu \pm 2\sigma$) over 30 days of historical snapshots.
+  - Enforced minimum sample size guard (`min_data_points >= 7`) to prevent false alarms on cold starts.
+  - Added configurable alert suppression window (default 60 minutes) to eliminate alert fatigue.
+  - Implemented multi-metric incident grouping: 3+ simultaneous anomalies within 5 minutes are grouped into a single `critical` alert.
+  - Built auto-resolution engine marking active alerts as resolved (`status='resolved'`, `resolved_at=NOW()`) when metrics return to normal baseline levels.
+- **Alert APIs & Real-Time Delivery:**
+  - Added `GET /api/alerts/active` for authenticated team alert retrieval.
+  - Added `GET /api/alerts/config` and `POST /api/alerts/config` allowing admins to dynamically adjust statistical thresholds and suppression windows.
+  - Added `POST /api/alerts/run-cycle` for manual on-demand evaluation.
+  - Broadcasted alerts in real time over Redis Pub/Sub channels `alerts:{team_id}` and `live-feed:{team_id}` to authenticated WebSocket clients.
+- **Frontend Alert UI:**
+  - Added `AlertBanner.tsx` for prominent sticky critical alert notifications.
+  - Added `AlertsPanel.tsx` slide-out drawer displaying detailed alert metrics, rolling baselines, and grouped incidents.
+  - Added alert counter badge in `Header.tsx` with toggle control.
+- **Automated Verification:**
+  - Added unit test suite `backend/tests/unit/test_anomaly_detection.py` covering rolling statistical calculations, sample guards, cycle time spikes, and suppression.
+  - Added integration test suite `backend/tests/integration/test_alerts_api.py` verifying snapshot health, RBAC on alert configs, and tenant-scoped alert queries.
+- **Architecture & Decisions:**
+  - Documented `ADR-031` (Statistical Anomaly Detection vs Prophet) and `ADR-032` (APScheduler vs Celery Beat) in `DECISIONS.md`.
+  - Added Anomaly Detection architecture flow and Mermaid diagram in `ARCHITECTURE.md`.
+
+---
+
 ## [Phase 3B] - 2026-11-17
 
 ### Added

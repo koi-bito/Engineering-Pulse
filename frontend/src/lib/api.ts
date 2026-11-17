@@ -83,6 +83,20 @@ export interface Team {
   created_at: string;
 }
 
+export interface WorkflowAlert {
+  id: string;
+  team_id: string;
+  metric_name: string;
+  actual_value: number;
+  expected_value: number;
+  severity: "warning" | "critical" | string;
+  status: "active" | "grouped" | "suppressed" | "resolved" | string;
+  group_id: string | null;
+  details: Record<string, unknown>;
+  created_at: string | null;
+  resolved_at: string | null;
+}
+
 let activeTeamId: string | null = null;
 
 export function setActiveTeamId(teamId: string | null): void {
@@ -155,6 +169,15 @@ api.interceptors.response.use(
 export async function fetchTeams(): Promise<Team[]> {
   try {
     const { data } = await api.get<Team[]>("/api/teams");
+    return data;
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchActiveAlerts(): Promise<WorkflowAlert[]> {
+  try {
+    const { data } = await api.get<WorkflowAlert[]>("/api/alerts/active");
     return data;
   } catch {
     return [];

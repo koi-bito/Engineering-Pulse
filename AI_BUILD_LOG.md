@@ -187,5 +187,27 @@
 
 **Decisions logged in DECISIONS.md:** Yes — ADR-029 and ADR-030.
 
+---
+
+## 2026-11-17 · Phase 4 — Anomaly Detection & Workflow Alerting
+
+**Problem I was solving:** Detecting engineering workflow degradation (cycle time spikes, stalled PRs, velocity drops) with automated statistical anomaly detection, idempotent hourly metric snapshots, suppression windows, incident grouping, and real-time alert delivery.
+
+**What I asked AI:** Create migration `0004_anomaly_detection_schema.py`, implement rolling mean + std statistical engine with suppression and auto-resolution, embed APScheduler for hourly snapshots, add snapshot freshness health checks, deliver alerts via Redis Pub/Sub, and build frontend alert banners and drawer.
+
+**What AI suggested & verified:**
+- Added Alembic migration `0004_anomaly_detection_schema.py` creating `metrics_snapshots`, `alert_configs`, and `workflow_alerts` tables with unique hourly index `(team_id, metric_name, date_trunc('hour', recorded_at AT TIME ZONE 'UTC'))` to guarantee idempotent snapshot writing.
+- Chose rolling statistics ($\mu \pm 2\sigma$) over Facebook Prophet for initial release because Prophet requires multi-year seasonal data to avoid overfitting noise on sparse/seeded datasets, while rolling statistics execute in sub-millisecond time with zero heavy compile dependencies.
+- Added cold-start guard (`min_data_points >= 7`) to prevent alerting on insufficient sample data, and 60-minute suppression windows to eliminate repetitive alert storms.
+- Implemented multi-metric incident grouping: 3+ simultaneous anomalies within 5 minutes are grouped into a single `critical` grouped alert.
+- Built auto-resolution engine that automatically marks active alerts as resolved (`resolved_at = NOW()`) once metrics return within expected operational bounds.
+- Added snapshot freshness endpoint `GET /api/health/snapshots` returning HTTP 503 if snapshots are $> 2\text{h}$ old, catching silent background job failures.
+- Created `AlertBanner.tsx` and `AlertsPanel.tsx` in React with live count badges in `Header.tsx`, receiving instant updates via Redis Pub/Sub without page refreshes.
+
+**What I learned:** In time-series alerting on sparse workflow data, simple statistical baselines with operational safeguards (suppression windows, grouping, auto-resolution, sample minimums) deliver significantly higher reliability and lower false-alarm fatigue than uncalibrated ML forecasting models.
+
+**Decisions logged in DECISIONS.md:** Yes — ADR-031 and ADR-032.
+
+
 
 

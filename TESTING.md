@@ -22,6 +22,11 @@ Comprehensive guide to automated tests, verification boundaries, design trade-of
 - **Metrics & Lag Tracking (`test_metrics_service.py`):**
   - Prometheus gauge updates for consumer lag per topic and partition.
   - Fallback logic when Kafka consumer group metadata is temporarily unavailable.
+- **Anomaly Detection & Statistical Baselining (`test_anomaly_detection.py`):**
+  - Rolling mean and sample standard deviation calculations across zero, single, and sample distributions.
+  - Insufficient data points guard: suppresses false alarms when fewer than `min_data_points` exist.
+  - Anomaly threshold evaluations for cycle time spikes and stalled PRs.
+  - Suppression window verification: mutes alert storms within configured suppression window.
 
 ### 1.2 Backend Integration Tests (`backend/tests/integration/`)
 - **Webhook Ingestion Pipeline (`test_webhook_receiver.py`):**
@@ -35,6 +40,10 @@ Comprehensive guide to automated tests, verification boundaries, design trade-of
 - **Read APIs & Error Envelope (`test_api_metrics.py`):**
   - Redis read-through caching across `/api/metrics/summary`, `/api/metrics/prs`, `/api/metrics/cycle-time`, and `/api/sprint/active`.
   - Consistent error envelope `{ "error", "detail", "retry_after"? }` across `400`, `401`, `404`, `422`, `429`, and `500`.
+- **Anomaly Alerting & Snapshot Freshness (`test_alerts_api.py`):**
+  - Snapshot health endpoint `GET /api/health/snapshots` returning `no_data`, `ok`, and `stale` (HTTP 503 if snapshot $> 2\text{h}$ old).
+  - Role-based configuration update permissions (`POST /api/alerts/config`).
+  - Scoped team alert retrieval with tenant isolation (`GET /api/alerts/active`).
 
 ### 1.3 Frontend Unit Tests (`frontend/tests/`)
 - Pure TypeScript state helpers executed via Node native runner (`dashboard.test.ts`):
