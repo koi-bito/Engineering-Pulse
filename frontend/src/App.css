@@ -670,6 +670,133 @@
   margin-top: 32px;
 }
 
+.ep-user-email {
+  font-size: 12px;
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.ep-logout-btn {
+  background: transparent;
+  color: #cbd5e1;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.ep-logout-btn:hover {
+  background: #1e293b;
+  color: #f1f5f9;
+  border-color: #475569;
+}
+
+.ep-login-container {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  background: #0b1020;
+}
+
+.ep-login-card {
+  width: 100%;
+  max-width: 420px;
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  border-radius: 12px;
+  padding: 32px;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.ep-login-header h2 {
+  font-size: 20px;
+  font-weight: 600;
+  color: #f1f5f9;
+  margin-bottom: 8px;
+}
+
+.ep-login-header p {
+  font-size: 13px;
+  color: #94a3b8;
+  line-height: 1.4;
+}
+
+.ep-login-error {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.ep-login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ep-form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ep-form-group label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #cbd5e1;
+}
+
+.ep-form-group input {
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: #f8fafc;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.ep-form-group input:focus {
+  border-color: #3b82f6;
+}
+
+.ep-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  transition: all 0.15s ease;
+}
+
+.ep-btn-primary {
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.ep-btn-primary:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.ep-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 @media (max-width: 960px) {
   .ep-body {
     flex-direction: column;

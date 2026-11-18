@@ -315,3 +315,31 @@ async def test_context_switching_via_x_team_id_header(
     _, args2 = fake_conn.queries[-1]
     assert str(TEAM_A2) in [str(a) for a in args2]
     assert str(TEAM_A1) not in [str(a) for a in args2]
+
+
+@pytest.mark.asyncio
+async def test_all_teams_query_scoped_by_org_id(
+    multi_client: AsyncClient, multi_user_db: InMemoryUserDB, multi_app
+) -> None:
+    admin_no_team = User(
+        id=uuid.UUID("aaaaaaaa-0000-0000-0000-000000000099"),
+        email="allteams@orga.com",
+        hashed_password="hash",
+        is_active=True,
+        is_superuser=False,
+        is_verified=True,
+        role="admin",
+        org_id=ORG_A,
+        team_id=None,
+    )
+    multi_user_db.add_user(admin_no_team)
+    token_a = generate_access_token(admin_no_team)
+    fake_conn = multi_app.state.db_pool.conn
+
+    await multi_client.get(
+        "/api/metrics/summary",
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    _, args = fake_conn.queries[-1]
+    assert ORG_A in args or str(ORG_A) in [str(a) for a in args]
+    assert args[1] is None

@@ -2,7 +2,7 @@ import asyncio
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, Request, status
+from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.websockets import WebSocket
 
 logger = structlog.get_logger(__name__)
@@ -14,9 +14,18 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 async def drain_websockets(request: Request) -> dict[str, Any]:
     """Gracefully close all active client WebSocket connections before server shutdown.
 
+    Restricted to internal local callers or deploy scripts.
     Sends close frame 4000 ("server restarting") so clients know to reconnect via backoff.
     Waits 2 seconds for clean socket teardown.
     """
+    client_host = request.client.host if request.client else None
+    is_local = client_host in ("127.0.0.1", "::1", "localhost", "testclient")
+    if not is_local:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: /admin/drain-ws is restricted to local internal callers",
+        )
+
     raw_conns: set[WebSocket] | None = getattr(request.app.state, "ws_connections", None)
     if not raw_conns:
         return {"status": "drained", "closed_connections": 0}

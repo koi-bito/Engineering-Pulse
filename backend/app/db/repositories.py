@@ -173,8 +173,10 @@ async def insert_failed_event(
 async def fetch_metrics_summary(
     conn: asyncpg.Connection,
     team_id: uuid.UUID | str | None = None,
+    org_id: uuid.UUID | str | None = None,
 ) -> dict[str, Any]:
     team_uuid = _to_uuid(team_id)
+    org_uuid = _to_uuid(org_id)
     row = await conn.fetchrow(
         """
         SELECT
@@ -182,41 +184,48 @@ async def fetch_metrics_summary(
                 SELECT COUNT(*)::int
                 FROM pull_requests
                 WHERE merged_at >= date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
-                  AND ($1::uuid IS NULL OR team_id = $1::uuid)
+                  AND ($1::uuid IS NULL OR org_id = $1::uuid)
+                  AND ($2::uuid IS NULL OR team_id = $2::uuid)
             ) AS prs_merged_today,
             (
                 SELECT ROUND(AVG(cycle_time_hours)::numeric, 2)::float
                 FROM pull_requests
                 WHERE merged_at >= NOW() - INTERVAL '7 days'
                   AND cycle_time_hours IS NOT NULL
-                  AND ($1::uuid IS NULL OR team_id = $1::uuid)
+                  AND ($1::uuid IS NULL OR org_id = $1::uuid)
+                  AND ($2::uuid IS NULL OR team_id = $2::uuid)
             ) AS avg_cycle_time_7d_hours,
             (
                 SELECT ROUND(AVG(cycle_time_hours)::numeric, 2)::float
                 FROM jira_tickets
                 WHERE resolved_at >= NOW() - INTERVAL '7 days'
                   AND cycle_time_hours IS NOT NULL
-                  AND ($1::uuid IS NULL OR team_id = $1::uuid)
+                  AND ($1::uuid IS NULL OR org_id = $1::uuid)
+                  AND ($2::uuid IS NULL OR team_id = $2::uuid)
             ) AS avg_ticket_cycle_time_7d_hours,
             (
                 SELECT COUNT(*)::int
                 FROM pull_requests
                 WHERE state = 'open'
-                  AND ($1::uuid IS NULL OR team_id = $1::uuid)
+                  AND ($1::uuid IS NULL OR org_id = $1::uuid)
+                  AND ($2::uuid IS NULL OR team_id = $2::uuid)
             ) AS open_prs,
             (
                 SELECT COUNT(*)::int
                 FROM jira_tickets
                 WHERE resolved_at IS NULL
-                  AND ($1::uuid IS NULL OR team_id = $1::uuid)
+                  AND ($1::uuid IS NULL OR org_id = $1::uuid)
+                  AND ($2::uuid IS NULL OR team_id = $2::uuid)
             ) AS active_tickets,
             (
                 SELECT COUNT(*)::int
                 FROM commits
                 WHERE timestamp >= date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
-                  AND ($1::uuid IS NULL OR team_id = $1::uuid)
+                  AND ($1::uuid IS NULL OR org_id = $1::uuid)
+                  AND ($2::uuid IS NULL OR team_id = $2::uuid)
             ) AS commits_today
         """,
+        org_uuid,
         team_uuid,
     )
     return {
@@ -241,8 +250,10 @@ async def fetch_pr_daily_counts(
     conn: asyncpg.Connection,
     days: int,
     team_id: uuid.UUID | str | None = None,
+    org_id: uuid.UUID | str | None = None,
 ) -> list[dict[str, Any]]:
     team_uuid = _to_uuid(team_id)
+    org_uuid = _to_uuid(org_id)
     rows = await conn.fetch(
         """
         WITH days AS (
@@ -256,14 +267,16 @@ async def fetch_pr_daily_counts(
             SELECT (merged_at AT TIME ZONE 'UTC')::date AS day, COUNT(*)::int AS merged_count
             FROM pull_requests
             WHERE merged_at >= ((NOW() AT TIME ZONE 'UTC')::date - ($1::int - 1))::timestamp AT TIME ZONE 'UTC'
-              AND ($2::uuid IS NULL OR team_id = $2::uuid)
+              AND ($2::uuid IS NULL OR org_id = $2::uuid)
+              AND ($3::uuid IS NULL OR team_id = $3::uuid)
             GROUP BY 1
         ),
         opened AS (
             SELECT (opened_at AT TIME ZONE 'UTC')::date AS day, COUNT(*)::int AS opened_count
             FROM pull_requests
             WHERE opened_at >= ((NOW() AT TIME ZONE 'UTC')::date - ($1::int - 1))::timestamp AT TIME ZONE 'UTC'
-              AND ($2::uuid IS NULL OR team_id = $2::uuid)
+              AND ($2::uuid IS NULL OR org_id = $2::uuid)
+              AND ($3::uuid IS NULL OR team_id = $3::uuid)
             GROUP BY 1
         )
         SELECT
@@ -276,6 +289,7 @@ async def fetch_pr_daily_counts(
         ORDER BY d.day ASC
         """,
         days,
+        org_uuid,
         team_uuid,
     )
     return [
@@ -292,8 +306,10 @@ async def fetch_cycle_time_series(
     conn: asyncpg.Connection,
     days: int,
     team_id: uuid.UUID | str | None = None,
+    org_id: uuid.UUID | str | None = None,
 ) -> list[dict[str, Any]]:
     team_uuid = _to_uuid(team_id)
+    org_uuid = _to_uuid(org_id)
     rows = await conn.fetch(
         """
         WITH days AS (
@@ -311,7 +327,8 @@ async def fetch_cycle_time_series(
             FROM jira_tickets
             WHERE resolved_at >= ((NOW() AT TIME ZONE 'UTC')::date - ($1::int - 1))::timestamp AT TIME ZONE 'UTC'
               AND cycle_time_hours IS NOT NULL
-              AND ($2::uuid IS NULL OR team_id = $2::uuid)
+              AND ($2::uuid IS NULL OR org_id = $2::uuid)
+              AND ($3::uuid IS NULL OR team_id = $3::uuid)
             GROUP BY 1
         ),
         pr_daily AS (
@@ -322,7 +339,8 @@ async def fetch_cycle_time_series(
             FROM pull_requests
             WHERE merged_at >= ((NOW() AT TIME ZONE 'UTC')::date - ($1::int - 1))::timestamp AT TIME ZONE 'UTC'
               AND cycle_time_hours IS NOT NULL
-              AND ($2::uuid IS NULL OR team_id = $2::uuid)
+              AND ($2::uuid IS NULL OR org_id = $2::uuid)
+              AND ($3::uuid IS NULL OR team_id = $3::uuid)
             GROUP BY 1
         )
         SELECT
@@ -343,6 +361,7 @@ async def fetch_cycle_time_series(
         ORDER BY d.day ASC
         """,
         days,
+        org_uuid,
         team_uuid,
     )
     return [
@@ -374,8 +393,10 @@ async def fetch_active_sprint(
     conn: asyncpg.Connection,
     project_key: str | None = None,
     team_id: uuid.UUID | str | None = None,
+    org_id: uuid.UUID | str | None = None,
 ) -> dict[str, Any]:
     team_uuid = _to_uuid(team_id)
+    org_uuid = _to_uuid(org_id)
     proj_filter = None if (not project_key or project_key == "all") else project_key
 
     count_rows = await conn.fetch(
@@ -383,11 +404,13 @@ async def fetch_active_sprint(
         SELECT status, COUNT(*)::int AS count
         FROM jira_tickets
         WHERE ($1::text IS NULL OR project = $1)
-          AND ($2::uuid IS NULL OR team_id = $2::uuid)
+          AND ($2::uuid IS NULL OR org_id = $2::uuid)
+          AND ($3::uuid IS NULL OR team_id = $3::uuid)
         GROUP BY status
         ORDER BY count DESC, status ASC
         """,
         proj_filter,
+        org_uuid,
         team_uuid,
     )
     ticket_rows = await conn.fetch(
@@ -395,11 +418,13 @@ async def fetch_active_sprint(
         SELECT id, project, assignee, summary, status, created_at, resolved_at, cycle_time_hours
         FROM jira_tickets
         WHERE ($1::text IS NULL OR project = $1)
-          AND ($2::uuid IS NULL OR team_id = $2::uuid)
+          AND ($2::uuid IS NULL OR org_id = $2::uuid)
+          AND ($3::uuid IS NULL OR team_id = $3::uuid)
         ORDER BY updated_at DESC, created_at DESC
         LIMIT 50
         """,
         proj_filter,
+        org_uuid,
         team_uuid,
     )
 
@@ -434,8 +459,10 @@ async def search_events_postgres(
     type_filter: str | None = None,
     author_filter: str | None = None,
     range_days: int | None = None,
+    org_id: uuid.UUID | str | None = None,
 ) -> list[dict[str, Any]]:
     team_uuid = _to_uuid(team_id)
+    org_uuid = _to_uuid(org_id)
     escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     pattern = f"%{escaped}%"
     author_pattern = f"%{author_filter.strip()}%" if author_filter else None
@@ -453,9 +480,10 @@ async def search_events_postgres(
                 title AS snippet
             FROM pull_requests
             WHERE (title ILIKE $1 ESCAPE '\\' OR repo ILIKE $1 ESCAPE '\\' OR author ILIKE $1 ESCAPE '\\')
-              AND ($3::uuid IS NULL OR team_id = $3::uuid)
-              AND ($4::text IS NULL OR author ILIKE $4)
-              AND ($5::int IS NULL OR opened_at >= NOW() - ($5 || ' days')::interval)
+              AND ($3::uuid IS NULL OR org_id = $3::uuid)
+              AND ($4::uuid IS NULL OR team_id = $4::uuid)
+              AND ($5::text IS NULL OR author ILIKE $5)
+              AND ($6::int IS NULL OR opened_at >= NOW() - ($6 || ' days')::interval)
             UNION ALL
             SELECT
                 'commit:' || sha AS id,
@@ -467,9 +495,10 @@ async def search_events_postgres(
                 message AS snippet
             FROM commits
             WHERE (message ILIKE $1 ESCAPE '\\' OR repo ILIKE $1 ESCAPE '\\' OR author ILIKE $1 ESCAPE '\\')
-              AND ($3::uuid IS NULL OR team_id = $3::uuid)
-              AND ($4::text IS NULL OR author ILIKE $4)
-              AND ($5::int IS NULL OR timestamp >= NOW() - ($5 || ' days')::interval)
+              AND ($3::uuid IS NULL OR org_id = $3::uuid)
+              AND ($4::uuid IS NULL OR team_id = $4::uuid)
+              AND ($5::text IS NULL OR author ILIKE $5)
+              AND ($6::int IS NULL OR timestamp >= NOW() - ($6 || ' days')::interval)
             UNION ALL
             SELECT
                 'ticket:' || id AS id,
@@ -481,16 +510,18 @@ async def search_events_postgres(
                 summary AS snippet
             FROM jira_tickets
             WHERE (summary ILIKE $1 ESCAPE '\\' OR project ILIKE $1 ESCAPE '\\' OR id ILIKE $1 ESCAPE '\\')
-              AND ($3::uuid IS NULL OR team_id = $3::uuid)
-              AND ($4::text IS NULL OR assignee ILIKE $4)
-              AND ($5::int IS NULL OR created_at >= NOW() - ($5 || ' days')::interval)
+              AND ($3::uuid IS NULL OR org_id = $3::uuid)
+              AND ($4::uuid IS NULL OR team_id = $4::uuid)
+              AND ($5::text IS NULL OR assignee ILIKE $5)
+              AND ($6::int IS NULL OR created_at >= NOW() - ($6 || ' days')::interval)
         ) AS combined
-        WHERE ($6::text IS NULL OR type = $6)
+        WHERE ($7::text IS NULL OR type = $7)
         ORDER BY timestamp DESC
         LIMIT $2
         """,
         pattern,
         limit,
+        org_uuid,
         team_uuid,
         author_pattern,
         range_days,
@@ -640,6 +671,28 @@ async def lookup_webhook_registration(
         """,
         source,
         secret,
+    )
+    return dict(row) if row else None
+
+
+async def lookup_webhook_registration_by_team(
+    conn: asyncpg.Connection,
+    source: str,
+    team_id: uuid.UUID | str,
+) -> dict[str, Any] | None:
+    team_uuid = _to_uuid(team_id)
+    if not team_uuid:
+        return None
+    row = await conn.fetchrow(
+        """
+        SELECT id, org_id, team_id, source, secret, created_at
+        FROM webhook_registrations
+        WHERE source = $1 AND team_id = $2
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        source,
+        team_uuid,
     )
     return dict(row) if row else None
 

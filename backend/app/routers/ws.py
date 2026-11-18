@@ -7,7 +7,7 @@ import structlog
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.auth.backend import decode_auth_token
-from app.services.pubsub import LIVE_FEED_CHANNEL
+from app.services.pubsub import LIVE_FEED_CHANNEL, team_alerts_channel
 
 logger = structlog.get_logger(__name__)
 
@@ -34,6 +34,8 @@ def _normalize_ws_message(raw_data: str) -> str:
 
 
 async def _forward_pubsub(websocket: WebSocket, pubsub: Any) -> None:
+    user_org_id = getattr(websocket.state, "org_id", None)
+    user_team_id = getattr(websocket.state, "team_id", None)
     while True:
         message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.5)
         if message is None:
@@ -44,6 +46,20 @@ async def _forward_pubsub(websocket: WebSocket, pubsub: Any) -> None:
             raw_data = raw_data.decode("utf-8")
         if not isinstance(raw_data, str):
             continue
+
+        # Enforce tenant isolation: drop messages belonging to other orgs or teams
+        try:
+            parsed = json.loads(raw_data)
+            if isinstance(parsed, dict):
+                evt_org = parsed.get("org_id") or parsed.get("data", {}).get("org_id")
+                evt_team = parsed.get("team_id") or parsed.get("data", {}).get("team_id")
+                if user_org_id and evt_org and str(evt_org) != str(user_org_id):
+                    continue
+                if user_team_id and evt_team and str(evt_team) != str(user_team_id):
+                    continue
+        except (json.JSONDecodeError, TypeError):
+            pass
+
         await websocket.send_text(_normalize_ws_message(raw_data))
 
 
@@ -85,6 +101,7 @@ async def websocket_feed(websocket: WebSocket) -> None:
 
     # User authenticated
     websocket.state.user_id = claims.get("sub")
+    websocket.state.org_id = claims.get("org_id")
     websocket.state.team_id = claims.get("team_id")
     websocket.state.role = claims.get("role")
 
@@ -94,10 +111,14 @@ async def websocket_feed(websocket: WebSocket) -> None:
 
     redis_client = websocket.app.state.redis
     pubsub = redis_client.pubsub()
-    await pubsub.subscribe(LIVE_FEED_CHANNEL)
+    channels = [LIVE_FEED_CHANNEL]
+    if websocket.state.team_id:
+        channels.append(f"{LIVE_FEED_CHANNEL}:{websocket.state.team_id}")
+        channels.append(team_alerts_channel(websocket.state.team_id))
+    await pubsub.subscribe(*channels)
     logger.info(
         "ws_client_connected",
-        channel=LIVE_FEED_CHANNEL,
+        channels=channels,
         user_id=claims.get("sub"),
     )
 
@@ -122,7 +143,7 @@ async def websocket_feed(websocket: WebSocket) -> None:
         if connections is not None:
             connections.discard(websocket)
         with contextlib.suppress(Exception):
-            await pubsub.unsubscribe(LIVE_FEED_CHANNEL)
+            await pubsub.unsubscribe(*channels)
         with contextlib.suppress(Exception):
             await pubsub.aclose()
-        logger.info("ws_client_disconnected", channel=LIVE_FEED_CHANNEL)
+        logger.info("ws_client_disconnected", channels=channels)

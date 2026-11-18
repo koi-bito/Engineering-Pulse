@@ -75,3 +75,46 @@ resource "aws_lb_listener" "https" {
   }
 }
 
+resource "aws_lb_listener_rule" "block_admin_http" {
+  count        = var.certificate_arn == null ? 1 : 0
+  listener_arn = aws_lb_listener.http_forward[0].arn
+  priority     = 10
+
+  action {
+    type = "fixed-response"
+    fixed_response {
+      content_type = "application/json"
+      message_body = "{\"error\":\"forbidden\",\"detail\":\"Admin endpoints are not accessible via ALB\"}"
+      status_code  = "403"
+    }
+  }
+
+  condition {
+    path_pattern {
+      values = ["/admin/*"]
+    }
+  }
+}
+
+resource "aws_lb_listener_rule" "block_admin_https" {
+  count        = var.certificate_arn != null ? 1 : 0
+  listener_arn = aws_lb_listener.https[0].arn
+  priority     = 10
+
+  action {
+    type = "fixed-response"
+    fixed_response {
+      content_type = "application/json"
+      message_body = "{\"error\":\"forbidden\",\"detail\":\"Admin endpoints are not accessible via ALB\"}"
+      status_code  = "403"
+    }
+  }
+
+  condition {
+    path_pattern {
+      values = ["/admin/*"]
+    }
+  }
+}
+
+

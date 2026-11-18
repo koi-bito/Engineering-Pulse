@@ -71,7 +71,7 @@ async def get_metrics_summary(request: Request) -> dict[str, Any]:
     cache_key = metrics_summary_key(org_id, team_id)
 
     async def _load() -> dict[str, Any]:
-        summary = await _run_db_query(request, fetch_metrics_summary, team_id)
+        summary = await _run_db_query(request, fetch_metrics_summary, team_id, org_id)
         # Keep the documented individual metric keys populated alongside the aggregate summary.
         p = tenant_prefix(org_id, team_id)
         await set_cached_json(
@@ -105,7 +105,7 @@ async def get_pr_metrics(
     redis_client = request.app.state.redis
 
     async def _load() -> dict[str, Any]:
-        series = await _run_db_query(request, fetch_pr_daily_counts, days, team_id)
+        series = await _run_db_query(request, fetch_pr_daily_counts, days, team_id, org_id)
         return {"range": range, "days": days, "series": series}
 
     data, _ = await get_or_compute_cached(
@@ -125,7 +125,7 @@ async def get_cycle_time_metrics(
     redis_client = request.app.state.redis
 
     async def _load() -> dict[str, Any]:
-        series = await _run_db_query(request, fetch_cycle_time_series, days, team_id)
+        series = await _run_db_query(request, fetch_cycle_time_series, days, team_id, org_id)
         return {"range": range, "days": days, "series": series}
 
     data, _ = await get_or_compute_cached(
@@ -146,7 +146,7 @@ async def get_active_sprint(
     redis_client = request.app.state.redis
 
     async def _load() -> dict[str, Any]:
-        return await _run_db_query(request, fetch_active_sprint, project_key, team_id)
+        return await _run_db_query(request, fetch_active_sprint, project_key, team_id, org_id)
 
     data, _ = await get_or_compute_cached(
         redis_client, cache_key, SPRINT_CACHE_TTL_SECONDS, _load
@@ -158,6 +158,7 @@ async def _search_elasticsearch(
     es_client: Any,
     query: str,
     limit: int,
+    org_id: Any | None = None,
     team_id: Any | None = None,
     type_filter: str | None = None,
     author_filter: str | None = None,
@@ -174,6 +175,8 @@ async def _search_elasticsearch(
     }
 
     filters: list[dict[str, Any]] = []
+    if org_id:
+        filters.append({"term": {"org_id": str(org_id)}})
     if team_id:
         filters.append({"term": {"team_id": str(team_id)}})
     if type_filter:
@@ -278,6 +281,7 @@ async def search_events(
                 es_client,
                 cleaned,
                 limit,
+                org_id=org_id,
                 team_id=team_id,
                 type_filter=type,
                 author_filter=author,
@@ -292,6 +296,7 @@ async def search_events(
             type,
             author,
             range_days,
+            org_id,
         )
         return {"query": cleaned, "total_hits": len(results), "results": results}
 

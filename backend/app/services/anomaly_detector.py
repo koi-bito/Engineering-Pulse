@@ -170,7 +170,9 @@ async def evaluate_metric_anomaly(
         baseline_vals = [current_val]
 
     mean, std = calculate_rolling_stats(baseline_vals)
-    upper_threshold = mean + (config["std_multiplier"] * std)
+    # Floor std at 0.5 to prevent zero-variance baselines from alarming on normal low-volume fluctuation
+    effective_std = max(std, 0.5)
+    upper_threshold = mean + (config["std_multiplier"] * effective_std)
 
     is_anomaly = False
     severity = "warning"
@@ -180,7 +182,7 @@ async def evaluate_metric_anomaly(
         # Cycle time spike: exceeds std band OR > 2x rolling average (when non-trivial)
         if current_val > upper_threshold or (mean > 1.0 and current_val >= 2.0 * mean):
             is_anomaly = True
-            if current_val >= mean + (config["std_multiplier"] * 1.5 * std):
+            if current_val >= mean + (config["std_multiplier"] * 1.5 * effective_std):
                 severity = "critical"
     elif metric_name == "stalled_prs_count":
         # PR stall spike

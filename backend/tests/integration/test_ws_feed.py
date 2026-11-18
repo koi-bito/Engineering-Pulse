@@ -3,6 +3,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
 from app.auth.backend import generate_access_token
 from app.config import Settings
@@ -72,6 +73,78 @@ def test_ws_feed_streams_redis_pubsub_and_cleans_up_on_disconnect() -> None:
     assert len(app.state.ws_connections) == 0
 
 
+def test_ws_feed_filters_out_cross_tenant_events() -> None:
+    cfg = Settings(
+        ENVIRONMENT="local",
+        ES_ENABLED=False,
+        GITHUB_WEBHOOK_SECRET="s",
+        JIRA_WEBHOOK_SECRET="s",
+    )
+    fake_redis = FakeAsyncRedis()
+    app = create_app(settings=cfg, rate_limit_storage_uri="memory://")
+    app.state.db_pool = FakeQueryPool()
+    app.state.redis = fake_redis
+    app.state.s3_archive = FakeS3Archive()
+    app.state.kafka_producer = FakeKafkaProducer()
+    app.state.es_client = None
+
+    tenant_org = uuid.UUID("11111111-1111-4000-8000-000000000001")
+    tenant_team = uuid.UUID("11111111-1111-4000-8000-000000000011")
+    other_org = uuid.UUID("22222222-2222-4000-8000-000000000002")
+
+    user = User(
+        id=uuid.uuid4(),
+        email="tenant@pulse.io",
+        hashed_password="pw",
+        is_active=True,
+        is_superuser=False,
+        is_verified=True,
+        role="member",
+        org_id=tenant_org,
+        team_id=tenant_team,
+    )
+    token = generate_access_token(user)
+
+    with TestClient(app) as client, client.websocket_connect("/ws/feed") as ws:
+        ws.send_json({"type": "auth", "token": token})
+        for _ in range(50):
+            if fake_redis.subscribers.get(LIVE_FEED_CHANNEL):
+                break
+            import time
+
+            time.sleep(0.02)
+
+        # Publish event belonging to a DIFFERENT organization
+        fake_redis.publish_sync(
+            LIVE_FEED_CHANNEL,
+            json.dumps(
+                {
+                    "type": "event",
+                    "org_id": str(other_org),
+                    "team_id": str(uuid.uuid4()),
+                    "summary": "Foreign tenant secret event",
+                }
+            ),
+        )
+
+        # Publish event belonging to THIS organization & team
+        fake_redis.publish_sync(
+            LIVE_FEED_CHANNEL,
+            json.dumps(
+                {
+                    "type": "event",
+                    "org_id": str(tenant_org),
+                    "team_id": str(tenant_team),
+                    "summary": "Own tenant authorized event",
+                }
+            ),
+        )
+
+        # First message received must be the authorized event, NOT the foreign event
+        msg = ws.receive_json()
+        assert msg["summary"] == "Own tenant authorized event"
+
+
 async def test_publish_live_event_includes_protocol_data_field() -> None:
     redis = FakeAsyncRedis()
     await publish_live_event(
@@ -120,3 +193,19 @@ async def test_drain_ws_endpoint_closes_active_connections() -> None:
         assert res.status_code == 200
         assert res.json() == {"status": "drained", "closed_connections": 1}
         assert closed_calls == [(4000, "server restarting")]
+
+
+async def test_drain_ws_forbidden_from_external_ip() -> None:
+    cfg = Settings(
+        ENVIRONMENT="local",
+        ES_ENABLED=False,
+        GITHUB_WEBHOOK_SECRET="s",
+        JIRA_WEBHOOK_SECRET="s",
+    )
+    app = create_app(settings=cfg, rate_limit_storage_uri="memory://")
+    transport = ASGITransport(app=app, client=("203.0.113.195", 12345))
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.post("/admin/drain-ws")
+        assert res.status_code == 403
+        assert res.json()["detail"] == "Forbidden: /admin/drain-ws is restricted to local internal callers"

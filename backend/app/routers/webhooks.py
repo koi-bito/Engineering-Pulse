@@ -13,6 +13,7 @@ from app.db.pool import acquire_connection
 from app.db.repositories import (
     fetch_all_webhook_registrations,
     lookup_webhook_registration,
+    lookup_webhook_registration_by_team,
 )
 from app.schemas.events import WebhookEnvelope
 from app.services.idempotency import clear_seen_event, is_duplicate_event
@@ -119,6 +120,19 @@ async def _resolve_github_secret_and_tenant(
     if db_pool and signature_header and signature_header.startswith("sha256="):
         try:
             async with acquire_connection(db_pool, "webhooks") as conn:
+                # O(1) fast-path when team is provided via header or query param
+                if header_team:
+                    reg = await lookup_webhook_registration_by_team(conn, "github", header_team)
+                    if reg:
+                        secret = reg["secret"]
+                        expected = (
+                            "sha256="
+                            + hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+                        )
+                        if hmac.compare_digest(expected, signature_header):
+                            return secret, str(reg["org_id"]), str(reg["team_id"])
+
+                # Fallback linear scan if team_id was not provided or secret did not match
                 registrations = await fetch_all_webhook_registrations(conn, "github")
                 for reg in registrations:
                     secret = reg["secret"]

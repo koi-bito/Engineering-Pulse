@@ -99,6 +99,25 @@ export interface WorkflowAlert {
 }
 
 let activeTeamId: string | null = null;
+let authToken: string | null = null;
+
+export function setAuthToken(token: string | null): void {
+  authToken = token;
+  if (typeof window !== "undefined") {
+    if (token) {
+      localStorage.setItem("ep_auth_token", token);
+    } else {
+      localStorage.removeItem("ep_auth_token");
+    }
+  }
+}
+
+export function getAuthToken(): string | null {
+  if (authToken === null && typeof window !== "undefined") {
+    authToken = localStorage.getItem("ep_auth_token");
+  }
+  return authToken;
+}
 
 export function setActiveTeamId(teamId: string | null): void {
   activeTeamId = teamId;
@@ -152,6 +171,10 @@ export const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
+  const token = getAuthToken();
+  if (token) {
+    config.headers.set("Authorization", `Bearer ${token}`);
+  }
   const teamId = getActiveTeamId();
   if (teamId) {
     config.headers.set("X-Team-ID", teamId);
@@ -159,13 +182,81 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+let isRefreshing = false;
+
 api.interceptors.response.use(
   (response) => response,
-  (error: AxiosError<ApiErrorBody>) => {
+  async (error: AxiosError<ApiErrorBody>) => {
+    const originalRequest = error.config;
+    if (
+      error.response?.status === 401 &&
+      originalRequest &&
+      !(originalRequest as unknown as { _retry?: boolean })._retry &&
+      !originalRequest.url?.includes("/auth/jwt/")
+    ) {
+      if (!isRefreshing) {
+        isRefreshing = true;
+        (originalRequest as unknown as { _retry: boolean })._retry = true;
+        try {
+          const newToken = await refreshAuthToken();
+          isRefreshing = false;
+          if (newToken) {
+            originalRequest.headers.set("Authorization", `Bearer ${newToken}`);
+            return api(originalRequest);
+          }
+        } catch {
+          isRefreshing = false;
+        }
+      }
+    }
     error.message = extractApiErrorMessage(error);
     return Promise.reject(error);
   },
 );
+
+export interface LoginUserResponse {
+  access_token: string;
+  token_type: string;
+  user?: {
+    id: string;
+    email: string;
+    role: string;
+    org_id: string;
+    team_ids: string[];
+  };
+}
+
+export async function loginUser(email: string, password: string): Promise<LoginUserResponse> {
+  const params = new URLSearchParams();
+  params.append("username", email);
+  params.append("password", password);
+  const { data } = await api.post<LoginUserResponse>("/auth/jwt/login", params, {
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+  });
+  setAuthToken(data.access_token);
+  return data;
+}
+
+export async function refreshAuthToken(): Promise<string | null> {
+  try {
+    const { data } = await api.post<LoginUserResponse>("/auth/jwt/refresh");
+    setAuthToken(data.access_token);
+    return data.access_token;
+  } catch {
+    setAuthToken(null);
+    return null;
+  }
+}
+
+export async function logoutUser(): Promise<void> {
+  try {
+    await api.post("/auth/jwt/logout");
+  } catch {
+    // ignore
+  } finally {
+    setAuthToken(null);
+  }
+}
 
 export async function fetchTeams(): Promise<Team[]> {
   try {

@@ -8,8 +8,10 @@ import {
 } from "../src/hooks/useWebSocket.ts";
 import {
   extractApiErrorMessage,
+  getAuthToken,
   getWebSocketUrl,
   groupTicketsByStatus,
+  setAuthToken,
 } from "../src/lib/api.ts";
 
 test("getWebSocketUrl converts http and https base URLs", () => {
@@ -118,4 +120,11 @@ test("extractApiErrorMessage formats backend detail and retry_after", () => {
     },
   );
   assert.equal(extractApiErrorMessage(err), "100 req/min exceeded (retry after 42s)");
+});
+
+test("setAuthToken and getAuthToken manage session token in memory", () => {
+  setAuthToken("test-jwt-token-123");
+  assert.equal(getAuthToken(), "test-jwt-token-123");
+  setAuthToken(null);
+  assert.equal(getAuthToken(), null);
 });

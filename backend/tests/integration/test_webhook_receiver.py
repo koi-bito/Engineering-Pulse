@@ -1,4 +1,5 @@
 import json
+from contextlib import asynccontextmanager
 
 from httpx import ASGITransport, AsyncClient
 
@@ -205,3 +206,79 @@ async def test_s3_failure_releases_idempotency_key_for_retry(
     assert retried.status_code == 202
     assert retried.json()["deduplicated"] is False
     assert len(fake_kafka.published) == 1
+
+
+async def test_github_webhook_fast_path_with_team_id(
+    fake_s3: FakeS3Archive,
+    fake_kafka: FakeKafkaProducer,
+) -> None:
+    import uuid
+
+    team_id = uuid.uuid4()
+    org_id = uuid.uuid4()
+    custom_secret = "team-specific-secret-key"
+
+    class FakeWebhookPool:
+        def __init__(self) -> None:
+            self.team_lookups = 0
+            self.fetch_all_called = 0
+
+        @asynccontextmanager
+        async def acquire(self):
+            class FakeConn:
+                def __init__(self, outer: FakeWebhookPool) -> None:
+                    self.outer = outer
+
+                async def fetchrow(self, query: str, *args):
+                    if "FROM webhook_registrations" in query and "team_id = $2" in query:
+                        self.outer.team_lookups += 1
+                        return {
+                            "id": uuid.uuid4(),
+                            "org_id": org_id,
+                            "team_id": team_id,
+                            "source": "github",
+                            "secret": custom_secret,
+                            "created_at": None,
+                        }
+                    return None
+
+                async def fetch(self, query: str, *args):
+                    self.outer.fetch_all_called += 1
+                    return []
+
+            yield FakeConn(self)
+
+        async def release(self, conn) -> None:
+            pass
+
+    pool = FakeWebhookPool()
+    cfg = Settings(
+        ENVIRONMENT="local",
+        ES_ENABLED=False,
+        GITHUB_WEBHOOK_SECRET="fallback-secret",
+        JIRA_WEBHOOK_SECRET="fallback-secret",
+    )
+    app = create_app(settings=cfg, rate_limit_storage_uri="memory://")
+    app.state.db_pool = pool
+    app.state.redis = FakeAsyncRedis()
+    app.state.s3_archive = fake_s3
+    app.state.kafka_producer = fake_kafka
+
+    body = json.dumps({"action": "opened"}).encode("utf-8")
+    sig = sign_github_payload(body, custom_secret)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.post(
+            "/webhooks/github",
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Hub-Signature-256": sig,
+                "X-GitHub-Delivery": "delivery-fast",
+                "X-GitHub-Event": "pull_request",
+                "X-Team-ID": str(team_id),
+            },
+        )
+        assert res.status_code == 202
+        assert pool.team_lookups == 1
+        assert pool.fetch_all_called == 0  # Proves O(1) direct lookup, no O(N) scan!

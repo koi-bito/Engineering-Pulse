@@ -157,3 +157,29 @@ async def test_alert_suppression_window() -> None:
     alert = await evaluate_metric_anomaly(conn, TEAM_ID, "avg_cycle_time")
     assert alert is not None
     assert alert["status"] == "suppressed"
+
+
+@pytest.mark.asyncio
+async def test_zero_variance_baseline_does_not_false_alarm() -> None:
+    conn = FakeAnomalyConn()
+    now = datetime.now(UTC)
+    # 8 snapshots with constant value 0.0 (std == 0.0)
+    for i in range(8):
+        conn.snapshots.append({
+            "id": uuid.uuid4(),
+            "team_id": TEAM_ID,
+            "metric_name": "prs_merged_count",
+            "value": 0.0,
+            "recorded_at": now - timedelta(days=8 - i),
+        })
+    # Small fluctuation: value 0.8 should be under effective threshold (0.0 + 2.0 * 0.5 = 1.0)
+    conn.snapshots.append({
+        "id": uuid.uuid4(),
+        "team_id": TEAM_ID,
+        "metric_name": "prs_merged_count",
+        "value": 0.8,
+        "recorded_at": now,
+    })
+    alert = await evaluate_metric_anomaly(conn, TEAM_ID, "prs_merged_count")
+    assert alert is None
+    assert len(conn.created_alerts) == 0

@@ -10,6 +10,8 @@ interface HeaderProps {
   onSelectTeam?: (teamId: string) => void;
   activeAlertsCount?: number;
   onToggleAlerts?: () => void;
+  userEmail?: string | null;
+  onLogout?: () => void;
 }
 
 export function Header({
@@ -21,6 +23,8 @@ export function Header({
   onSelectTeam,
   activeAlertsCount = 0,
   onToggleAlerts,
+  userEmail,
+  onLogout,
 }: HeaderProps) {
   const statusLabel =
     apiHealthy === null
@@ -70,6 +74,17 @@ export function Header({
           Live Feed: {wsStatus}
         </span>
         <span className="ep-status">{statusLabel}</span>
+        {userEmail && <span className="ep-user-email">{userEmail}</span>}
+        {onLogout && (
+          <button
+            type="button"
+            className="ep-logout-btn"
+            onClick={onLogout}
+            title="Log out"
+          >
+            Logout
+          </button>
+        )}
       </div>
     </header>
   );
